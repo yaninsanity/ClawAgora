@@ -88,18 +88,18 @@ CLAWAGORA_EXPOSE_ERROR_DETAIL: bool = (
 #
 # CLAWAGORA_MODEL_PROVIDER   "null" (default, regex-only) | "ollama" | "openai_compat"
 # CLAWAGORA_MODEL_URL        Base URL of the model server. Default: http://localhost:11434
-# CLAWAGORA_MODEL_NAME       Model identifier. Default: gemma3:4b (can be gemma4 / qwen / llama / etc.)
+# CLAWAGORA_MODEL_NAME       Model identifier. Default: gemma4:latest (override for qwen / llama / etc.)
 # CLAWAGORA_MODEL_API_KEY    Bearer token for openai_compat endpoints (leave empty for local).
 # CLAWAGORA_MODEL_TIMEOUT    Per-request timeout in seconds. Default: 30
 #
-# Quick start with Ollama + Gemma 3:
-#   ollama pull gemma3:4b
+# Quick start with Ollama + Gemma 4:
+#   ollama pull gemma4:latest
 #   CLAWAGORA_MODEL_PROVIDER=ollama CLAWAGORA_MODEL_NAME=gemma4:latest ./scripts/dev.sh
 #   CLAWAGORA_MODEL_PROVIDER=openai_compat CLAWAGORA_MODEL_URL=http://localhost:11434 CLAWAGORA_MODEL_NAME=gemma4:latest ./scripts/dev.sh
 # ---------------------------------------------------------------------------
 CLAWAGORA_MODEL_PROVIDER: str = os.environ.get("CLAWAGORA_MODEL_PROVIDER", "null").strip()
 CLAWAGORA_MODEL_URL: str = os.environ.get("CLAWAGORA_MODEL_URL", "http://localhost:11434").strip()
-CLAWAGORA_MODEL_NAME: str = os.environ.get("CLAWAGORA_MODEL_NAME", "gemma3:4b").strip()
+CLAWAGORA_MODEL_NAME: str = os.environ.get("CLAWAGORA_MODEL_NAME", "gemma4:latest").strip()
 CLAWAGORA_MODEL_API_KEY: str = os.environ.get("CLAWAGORA_MODEL_API_KEY", "").strip()
 CLAWAGORA_MODEL_TIMEOUT: int = parse_positive_int(
     "CLAWAGORA_MODEL_TIMEOUT",

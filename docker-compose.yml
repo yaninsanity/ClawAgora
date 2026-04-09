@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     command: sh -c "python apps/server/manage.py migrate && bash scripts/dev.sh"
     environment:
       POSTGRES_HOST: postgres
@@ -36,6 +38,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     command: bash scripts/worker.sh
     environment:
       POSTGRES_HOST: postgres
@@ -55,6 +59,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GIT_SHA: ${GIT_SHA:-}
     command: python examples/openclaw_bridge_mock.py
     environment:
       CLAWAGORA_OPENCLAW_WEBHOOK_SECRET: change-me

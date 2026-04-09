@@ -46,10 +46,13 @@ def test_health():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
+    assert "version" in body
+    assert body.get("git_sha") is None or isinstance(body["git_sha"], str)
     assert body["database"] == "ok"
     assert "cache" in body
     assert body["cache"]["backend"] in ("locmem", "redis")
     assert isinstance(body["cache"]["shared"], bool)
+    assert body["cache"]["status"] in ("ok", "unavailable")
     assert "redis" in body
 
 

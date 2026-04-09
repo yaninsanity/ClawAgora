@@ -58,7 +58,7 @@ class OpenAICompatProvider(ModelProvider):
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model_name: str = "gemma3:4b",
+        model_name: str = "gemma4:latest",
         api_key: str = "",
         timeout_secs: int = 30,
         temperature: float = 0.0,

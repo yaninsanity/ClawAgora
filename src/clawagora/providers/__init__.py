@@ -13,12 +13,12 @@ OpenAICompatProvider   — any OpenAI-compatible endpoint (Ollama /v1, LM Studio
 Usage (Python)
 --------------
 >>> from clawagora.providers.ollama import OllamaModelProvider
->>> provider = OllamaModelProvider(model_name="gemma3:4b")
+>>> provider = OllamaModelProvider(model_name="gemma4:latest")
 >>> result = provider.complete("Classify: fix the authentication bug")
 
 Usage (env-driven via Django settings)
 ---------------------------------------
-Set CLAWAGORA_MODEL_PROVIDER=ollama, CLAWAGORA_MODEL_NAME=gemma3:4b.
+Set CLAWAGORA_MODEL_PROVIDER=ollama, CLAWAGORA_MODEL_NAME=gemma4:latest.
 ``build_default_pipeline()`` in orchestration/services.py reads these settings
 and injects the appropriate provider automatically.
 """

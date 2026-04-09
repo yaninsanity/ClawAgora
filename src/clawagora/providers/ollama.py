@@ -31,7 +31,7 @@ class OllamaModelProvider(ModelProvider):
         Ollama server base URL.  Default: ``http://localhost:11434``.
         Override with ``CLAWAGORA_MODEL_URL`` when running in Docker/remote.
     model_name:
-        Ollama model tag.  Default: ``gemma3:4b``.
+        Ollama model tag.  Default: ``gemma4:latest``.
         Override with ``CLAWAGORA_MODEL_NAME``.
     timeout_secs:
         Per-request timeout in seconds.  Default: 30.
@@ -50,7 +50,7 @@ class OllamaModelProvider(ModelProvider):
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model_name: str = "gemma3:4b",
+        model_name: str = "gemma4:latest",
         timeout_secs: int = 30,
         temperature: float = 0.0,
         max_tokens: int = 512,

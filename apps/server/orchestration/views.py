@@ -18,7 +18,6 @@ from rest_framework.views import APIView
 from clawagora.config import GOVERNANCE_LEVEL_POLICIES
 from clawagora.contracts.task import TaskPhase
 from clawagora.governance.profile import (
-    CONSTITUTIONAL_WESTERN_ROLES,
     _PROFILE_ROLES,
     build_governance_context,
     governance_level_policy,
@@ -29,7 +28,6 @@ from orchestration.app_settings import (
     governance_alert_budget_threshold,
     governance_alert_low_efficiency_threshold,
     governance_daily_budget,
-    governance_leaderboard_config,
     governance_runtime_config,
     governance_snapshot_ttl_seconds,
 )

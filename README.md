@@ -91,6 +91,15 @@ docker compose up --build
 
 API will be available at `http://localhost:8000`.
 
+To embed the commit in `GET /api/v1/health/` as `git_sha`, rebuild with:
+
+```bash
+export GIT_SHA="$(git rev-parse HEAD)"
+docker compose build
+```
+
+Compose passes `GIT_SHA` into the image build (`docker-compose.yml` `build.args`).
+
 ### Gemma 4 quick start (Ollama / OpenAI-compatible)
 
 ```bash
@@ -111,7 +120,7 @@ export CLAWAGORA_MODEL_NAME=gemma4:latest
 
 HTTP API (JSON):
 
-- `GET /api/v1/health/` — liveness: database check; includes cache summary (`cache.backend`, `cache.shared`), plus **Redis + queue metrics** when `django_rq` is installed (`queued_jobs`, `started_jobs`, `deferred_jobs`)
+- `GET /api/v1/health/` — liveness: database check; includes **`version`** (from `clawagora.version`) and optional **`git_sha`** (from `GIT_SHA` or `SOURCE_COMMIT` env); includes cache summary (`cache.backend`, `cache.shared`, `cache.status`), plus **Redis + queue metrics** when `django_rq` is installed (`queued_jobs`, `started_jobs`, `deferred_jobs`)
 - `GET /api/v1/tasks/` — list tasks (`?status=` includes `needs_revision`; `?risk_tier=low|medium|high`; `?q=` substring on `input_text`; `?judicial_queue=1` for `pending_approval`; `?limit=`, `?offset=`); returns `count`, `limit`, `offset`, `results[]`
 - `POST /api/v1/tasks/` — create and execute a task (body: `{ "input_text": "...", "metadata": {} }`). Returns `201` (sync completed), `202` (async queued **or** paused for human approval), with `Location` header pointing at the task resource.
 - `POST /api/v1/tasks/<uuid>/retry/` — retry a **failed** or **`needs_revision`** (judicial reject) task
