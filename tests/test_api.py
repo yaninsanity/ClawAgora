@@ -47,6 +47,9 @@ def test_health():
     body = r.json()
     assert body["status"] == "ok"
     assert body["database"] == "ok"
+    assert "cache" in body
+    assert body["cache"]["backend"] in ("locmem", "redis")
+    assert isinstance(body["cache"]["shared"], bool)
     assert "redis" in body
 
 

@@ -34,6 +34,7 @@ from orchestration.app_settings import (
     governance_snapshot_ttl_seconds,
 )
 from orchestration.api_exceptions import TaskConflict
+from orchestration.capability_policy import validate_active_capability_bundle
 from orchestration.execution import resolve_execution_mode
 from orchestration.error_codes import CANCELLED, ENQUEUE_FAILED
 from orchestration.leaderboard import (
@@ -1460,6 +1461,11 @@ class CapabilityBundleListView(APIView):
         ser = CapabilityBundleWriteSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         d = ser.validated_data
+        if d.get("is_active", True):
+            validate_active_capability_bundle(
+                source_url=d.get("source_url") or "",
+                source_sha256=d.get("source_sha256") or "",
+            )
         bundle = CapabilityBundle.objects.create(
             name=d["name"],
             slug=d["slug"],
@@ -1490,6 +1496,11 @@ class CapabilityBundleDetailView(APIView):
         ser.is_valid(raise_exception=True)
         for key, val in ser.validated_data.items():
             setattr(bundle, key, val)
+        if bundle.is_active:
+            validate_active_capability_bundle(
+                source_url=bundle.source_url,
+                source_sha256=bundle.source_sha256,
+            )
         bundle.save()
         return Response(CapabilityBundleSerializer(bundle).data)
 

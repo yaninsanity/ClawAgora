@@ -65,6 +65,17 @@ CLAWAGORA_MAX_METADATA_BYTES = parse_positive_int(
     minimum=1,
 )
 
+# Capability / knowledge bundles (GET|POST /api/v1/capabilities/).
+# CLAWAGORA_CAPABILITY_REQUIRE_SHA256=1      active bundles must pin source_sha256 (64 hex)
+# CLAWAGORA_CAPABILITY_REQUIRE_SOURCE_URL=1  active bundles must set source_url
+# ---------------------------------------------------------------------------
+CLAWAGORA_CAPABILITY_REQUIRE_SHA256: bool = (
+    os.environ.get("CLAWAGORA_CAPABILITY_REQUIRE_SHA256", "0").strip() == "1"
+)
+CLAWAGORA_CAPABILITY_REQUIRE_SOURCE_URL: bool = (
+    os.environ.get("CLAWAGORA_CAPABILITY_REQUIRE_SOURCE_URL", "0").strip() == "1"
+)
+
 CLAWAGORA_EXECUTION_MODE = parse_execution_mode(os.environ.get("CLAWAGORA_EXECUTION_MODE"))
 
 CLAWAGORA_API_KEY: str = os.environ.get("CLAWAGORA_API_KEY", "").strip()
@@ -567,6 +578,24 @@ if _optional_app("django_rq"):
             "URL": os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
             "DEFAULT_TIMEOUT": int(os.environ.get("RQ_DEFAULT_TIMEOUT", "360")),
         },
+    }
+
+# Cache backend (used by callback replay guard and optional app caches).
+# CLAWAGORA_CACHE_URL: when set to redis://..., enables shared cross-process nonce lock.
+CLAWAGORA_CACHE_URL: str = os.environ.get("CLAWAGORA_CACHE_URL", "").strip()
+if CLAWAGORA_CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CLAWAGORA_CACHE_URL,
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "clawagora-default",
+        }
     }
 
 MIDDLEWARE = [

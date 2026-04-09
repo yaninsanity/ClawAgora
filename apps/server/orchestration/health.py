@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import connection
 from django.http import JsonResponse
 
@@ -7,7 +8,20 @@ from orchestration.app_settings import is_rq_stack_active
 
 
 def health(_request):
-    payload: dict = {"status": "ok", "database": "ok"}
+    cache_url = (getattr(settings, "CLAWAGORA_CACHE_URL", "") or "").strip()
+    cache_backend = (
+        "redis"
+        if cache_url
+        else "locmem"
+    )
+    payload: dict = {
+        "status": "ok",
+        "database": "ok",
+        "cache": {
+            "backend": cache_backend,
+            "shared": bool(cache_url),
+        },
+    }
 
     try:
         connection.ensure_connection()

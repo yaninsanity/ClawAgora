@@ -57,6 +57,9 @@ def test_openclaw_status_includes_delegate_snapshot():
     assert deleg["delegate_url"] == "http://bridge.test/delegate"
     assert deleg["callback_url"] == "http://api.example/api/v1/integrations/openclaw/callback/"
     assert deleg["webhook_secret_configured"] is True
+    assert deleg["callback_guard_cache_backend"] in ("locmem", "redis")
+    assert "knowledge" in deleg
+    assert "capability_require_sha256" in deleg["knowledge"]
     assert deleg["agent_config"]["default_agents"] == ["a", "b"]
     assert "high" in deleg["agent_config"]["by_risk_tiers"]
 

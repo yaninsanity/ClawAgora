@@ -73,6 +73,19 @@ def build_delegate_status_snapshot(settings_obj: Any) -> dict[str, Any]:
             (getattr(settings_obj, "CLAWAGORA_OPENCLAW_WEBHOOK_SECRET", "") or "").strip()
         ),
         "delegate_timeout_sec": float(getattr(settings_obj, "CLAWAGORA_OPENCLAW_DELEGATE_TIMEOUT_SEC", 60.0)),
+        "callback_guard_cache_backend": (
+            "redis"
+            if bool((getattr(settings_obj, "CLAWAGORA_CACHE_URL", "") or "").strip())
+            else "locmem"
+        ),
+        "knowledge": {
+            "capability_require_sha256": bool(
+                getattr(settings_obj, "CLAWAGORA_CAPABILITY_REQUIRE_SHA256", False)
+            ),
+            "capability_require_source_url": bool(
+                getattr(settings_obj, "CLAWAGORA_CAPABILITY_REQUIRE_SOURCE_URL", False)
+            ),
+        },
         "agent_config": {
             "default_agents": [str(x) for x in default_agents[:32]],
             "by_risk_tiers": by_risk_keys,

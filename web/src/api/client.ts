@@ -457,6 +457,11 @@ export type OpenClawDelegateStatus = {
   callback_url: string | null;
   webhook_secret_configured: boolean;
   delegate_timeout_sec: number;
+  callback_guard_cache_backend?: "redis" | "locmem";
+  knowledge?: {
+    capability_require_sha256: boolean;
+    capability_require_source_url: boolean;
+  };
   agent_config: {
     default_agents: string[];
     by_risk_tiers: string[];

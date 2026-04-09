@@ -908,6 +908,16 @@ function GovernancePanel({
                 <span className="gov-stat-label">Timeout</span>
                 <span className="gov-stat-value">{deleg.delegate_timeout_sec}s</span>
               </div>
+              {deleg.knowledge && (
+                <div className="gov-stat-row">
+                  <span className="gov-stat-label">Knowledge pins</span>
+                  <span className="gov-stat-value">
+                    sha256: {deleg.knowledge.capability_require_sha256 ? "required" : "optional"}
+                    {" · "}
+                    source URL: {deleg.knowledge.capability_require_source_url ? "required" : "optional"}
+                  </span>
+                </div>
+              )}
               {deleg.agent_config.default_agents.length > 0 || deleg.agent_config.by_risk_tiers.length > 0 ? (
                 <div className="gov-stat-row" style={{ alignItems: "flex-start" }}>
                   <span className="gov-stat-label">Agents</span>

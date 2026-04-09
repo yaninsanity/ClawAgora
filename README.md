@@ -39,6 +39,18 @@ Optional async worker (Redis + django-rq):
 pip install -e ".[server,async,dev]"
 ```
 
+## Python dependency management
+
+Python dependencies are managed in `pyproject.toml`:
+
+- core runtime: `[project.dependencies]`
+- server stack: `[project.optional-dependencies].server`
+- async worker stack: `[project.optional-dependencies].async`
+- development tools: `[project.optional-dependencies].dev`
+
+This project currently uses `pip install -e ".[...]"` from `pyproject.toml` and does
+not maintain a separate `requirements.txt`.
+
 ## Database
 
 Default development settings use SQLite at `apps/server/db.sqlite3`.
@@ -62,6 +74,23 @@ python apps/server/manage.py migrate
 bash scripts/dev.sh
 ```
 
+## Docker quick start
+
+This repository now includes a root `Dockerfile` and compose services for:
+
+- `app` (Django API)
+- `worker` (RQ worker)
+- `bridge` (OpenClaw mock bridge for delegate/callback validation)
+- `postgres` and `redis`
+
+Run:
+
+```bash
+docker compose up --build
+```
+
+API will be available at `http://localhost:8000`.
+
 ### Gemma 4 quick start (Ollama / OpenAI-compatible)
 
 ```bash
@@ -82,7 +111,7 @@ export CLAWAGORA_MODEL_NAME=gemma4:latest
 
 HTTP API (JSON):
 
-- `GET /api/v1/health/` — liveness: database check; **Redis + queue metrics** when `django_rq` is installed (`queued_jobs`, `started_jobs`, `deferred_jobs`)
+- `GET /api/v1/health/` — liveness: database check; includes cache summary (`cache.backend`, `cache.shared`), plus **Redis + queue metrics** when `django_rq` is installed (`queued_jobs`, `started_jobs`, `deferred_jobs`)
 - `GET /api/v1/tasks/` — list tasks (`?status=` includes `needs_revision`; `?risk_tier=low|medium|high`; `?q=` substring on `input_text`; `?judicial_queue=1` for `pending_approval`; `?limit=`, `?offset=`); returns `count`, `limit`, `offset`, `results[]`
 - `POST /api/v1/tasks/` — create and execute a task (body: `{ "input_text": "...", "metadata": {} }`). Returns `201` (sync completed), `202` (async queued **or** paused for human approval), with `Location` header pointing at the task resource.
 - `POST /api/v1/tasks/<uuid>/retry/` — retry a **failed** or **`needs_revision`** (judicial reject) task
@@ -213,6 +242,9 @@ Environment (selected):
 | `CLAWAGORA_OPENCLAW_CALLBACK_REQUIRE_GUARD` | `1` requires anti-replay headers on callback (`X-ClawAgora-Timestamp`, `X-ClawAgora-Nonce`) |
 | `CLAWAGORA_OPENCLAW_CALLBACK_MAX_SKEW_SEC` | Allowed callback timestamp clock skew in seconds (default `300`) |
 | `CLAWAGORA_OPENCLAW_CALLBACK_NONCE_TTL_SEC` | Nonce replay-lock TTL in seconds (default `900`) |
+| `CLAWAGORA_CACHE_URL` | Optional shared cache URL (recommended: Redis). Set this in multi-instance deployments so callback replay guard is globally enforced. |
+| `CLAWAGORA_CAPABILITY_REQUIRE_SHA256` | `1` requires active capability bundles to set `source_sha256` (64 hex) — reduces knowledge drift |
+| `CLAWAGORA_CAPABILITY_REQUIRE_SOURCE_URL` | `1` requires active bundles to set `source_url` |
 
 When `DJANGO_DEBUG=0`, set `CORS_ALLOWED_ORIGINS` for browser clients and optionally `SECURE_SSL_REDIRECT=1` behind TLS termination.
 
@@ -226,6 +258,9 @@ Prompt management:
 - Prompt templates are centrally managed in `src/clawagora/prompts.py` (registry pattern).
 - Prompt versioning uses `prompt_key + version + rollout` with deterministic hash rollout by `request_id`.
 - `ClassifyService` and `Synthesizer` resolve prompts by key/version instead of embedding inline constants.
+- Shared knowledge can be registered as capability bundles via `GET|POST /api/v1/capabilities/` (with `source_url`, `source_sha256`, and `bound_executors`) so teams reuse the same validated knowledge sources.
+- Governance policy can enforce how prompts/knowledge are used at execution time (allowlists/deny patterns and approval flow), giving a single control plane instead of per-agent prompt drift.
+- Automated integrity scan (optional): `python apps/server/manage.py clawagora_capability_integrity` lists active bundles missing required pins when `CLAWAGORA_CAPABILITY_REQUIRE_*` is enabled; use `--deactivate` to soft-disable offenders.
 
 Cost management:
 
@@ -359,6 +394,8 @@ selected = router.select("task-uuid-step-1", trust=TrustScore(value=0.9))
 
 See `docs/ARCHITECTURE.md` for the product and technical roadmap.
 For OpenClaw end-to-end verification and no-blind-spot checks, see `docs/OPENCLAW_E2E_RUNBOOK.md`.
+
+Contributing and security: [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md).
 
 ## License
 
