@@ -150,6 +150,7 @@ Full operator spec (three-powers rollout): **docs/GOVERNANCE_THREE_PHASES.md**.
 - `POST /api/v1/governance/feedback/` — apply manual accountability feedback to a task (`task_id`, `entries[]`, optional `source`); updates metadata and appends a dedicated `governance` timeline event
 - `GET /api/v1/governance/leaderboard/` — cross-task role leaderboard with efficiency metrics and recommended next-round weights (`?profile=constitutional_western&limit=20`)
 - `GET /api/v1/governance/dashboard/` — operations panel payload: daily budget usage/remaining, top roles, and governance alerts
+- `GET /api/v1/governance/summary/` — read-only aggregate: active policy, capability integrity vs `CLAWAGORA_CAPABILITY_REQUIRE_*`, prompt registry + circuit metrics, OpenClaw delegate hints (`schema: clawagora.governance.summary.v1`)
 - `GET|POST /api/v1/governance/profiles/` — governance level profile cards and one-click default level selection for new tasks
 - `POST /api/v1/governance/apply-recommendations/` — persist leaderboard recommendations as profile baseline weights (`dry_run=true` previews diff only, `governance_level=minimal|balanced|strict` controls adaptation speed); future tasks in that profile inherit these baseline weights automatically
 - `POST /api/v1/governance/rollback/` — rollback governance profile baseline weights to the previous revision

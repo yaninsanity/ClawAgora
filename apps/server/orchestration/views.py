@@ -33,6 +33,7 @@ from orchestration.app_settings import (
 )
 from orchestration.api_exceptions import TaskConflict
 from orchestration.capability_policy import validate_active_capability_bundle
+from orchestration.governance_summary import build_governance_summary
 from orchestration.execution import resolve_execution_mode
 from orchestration.error_codes import CANCELLED, ENQUEUE_FAILED
 from orchestration.leaderboard import (
@@ -810,6 +811,13 @@ class GovernanceDashboardView(APIView):
         }
         cache.set(ck, payload, timeout=cfg.response_cache_ttl_seconds)
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class GovernanceSummaryView(APIView):
+    """Read-only aggregate: active policy, capability integrity, prompt registry + circuit metrics."""
+
+    def get(self, request):
+        return Response(build_governance_summary(), status=status.HTTP_200_OK)
 
 
 class GovernanceLeaderboardHistoryView(APIView):
