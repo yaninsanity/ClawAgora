@@ -6,15 +6,21 @@ from django.conf import settings
 from rest_framework import serializers
 
 from orchestration.models import (
+    ApprovalPolicyTemplate,
     ApprovalRequest,
     ApprovalVote,
     CapabilityBundle,
+    GovernanceSubject,
+    OrganizationUnit,
     PolicyActivationEvent,
     PolicyDraft,
+    PolicyEvolutionProposal,
     Receipt,
     Task,
     TaskEvent,
 )
+from orchestration.metadata_context import normalize_task_metadata_clawagora_context
+from orchestration.policy_content import validate_policy_content_keys
 
 
 class TaskCreateSerializer(serializers.Serializer):
@@ -30,7 +36,7 @@ class TaskCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError("Metadata payload is too large.")
         if len(value) > settings.CLAWAGORA_MAX_METADATA_KEYS:
             raise serializers.ValidationError("Too many metadata keys.")
-        return value
+        return normalize_task_metadata_clawagora_context(value)
 
 
 class TaskSerializer(serializers.ModelSerializer):
@@ -164,6 +170,10 @@ class PolicyDraftWriteSerializer(serializers.Serializer):
     def validate_content(self, value) -> dict:
         if not isinstance(value, dict):
             raise serializers.ValidationError("content must be a JSON object.")
+        try:
+            validate_policy_content_keys(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
         allowed = value.get("allowed_executors")
         if allowed is not None:
             if not isinstance(allowed, list) or not all(isinstance(e, str) for e in allowed):
@@ -173,6 +183,84 @@ class PolicyDraftWriteSerializer(serializers.Serializer):
             if not isinstance(deny, list) or not all(isinstance(p, str) for p in deny):
                 raise serializers.ValidationError("deny_patterns must be a list of strings.")
         return value
+
+
+class OrganizationUnitSerializer(serializers.ModelSerializer):
+    approval_template_slug = serializers.SerializerMethodField()
+
+    class Meta:
+        model = OrganizationUnit
+        fields = ["id", "slug", "name", "parent_id", "approval_template_slug", "created_at"]
+
+    def get_approval_template_slug(self, obj: OrganizationUnit) -> str | None:
+        if obj.approval_template_id and getattr(obj, "approval_template", None):
+            return obj.approval_template.slug
+        return None
+
+
+class GovernanceSubjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = GovernanceSubject
+        fields = [
+            "id",
+            "voter_id",
+            "external_subject",
+            "display_name",
+            "org_unit_id",
+            "rank_hint",
+            "updated_at",
+        ]
+
+
+class ApprovalPolicyTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ApprovalPolicyTemplate
+        fields = ["slug", "name", "quorum", "description", "sort_order"]
+
+
+class PolicyEvolutionProposalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PolicyEvolutionProposal
+        fields = [
+            "id",
+            "proposed_content",
+            "source",
+            "rationale",
+            "status",
+            "created_at",
+            "resolved_at",
+            "resolution_note",
+            "derived_policy_draft_id",
+        ]
+
+
+class PolicyEvolutionProposalCreateSerializer(serializers.Serializer):
+    proposed_content = serializers.JSONField()
+    source = serializers.CharField(max_length=64)
+    rationale = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_proposed_content(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("proposed_content must be a JSON object.")
+        try:
+            validate_policy_content_keys(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        allowed = value.get("allowed_executors")
+        if allowed is not None:
+            if not isinstance(allowed, list) or not all(isinstance(e, str) for e in allowed):
+                raise serializers.ValidationError("allowed_executors must be a list of strings.")
+        deny = value.get("deny_patterns")
+        if deny is not None:
+            if not isinstance(deny, list) or not all(isinstance(p, str) for p in deny):
+                raise serializers.ValidationError("deny_patterns must be a list of strings.")
+        return value
+
+
+class PolicyEvolutionProposalResolveSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(choices=("accept", "reject"))
+    draft_name = serializers.CharField(max_length=128, required=False, allow_blank=True)
+    note = serializers.CharField(max_length=512, required=False, allow_blank=True, default="")
 
 
 class TaskAmendSerializer(serializers.Serializer):
@@ -186,11 +274,12 @@ class TaskAmendSerializer(serializers.Serializer):
     metadata = serializers.JSONField(required=False)
 
     def validate_metadata(self, value: dict) -> dict:
+        """Validate the patch only; view merges with existing task metadata then applies limits + clawagora_context."""
         raw = json.dumps(value, ensure_ascii=False)
         if len(raw) > settings.CLAWAGORA_MAX_METADATA_BYTES:
-            raise serializers.ValidationError("Metadata payload is too large.")
+            raise serializers.ValidationError("Metadata patch is too large.")
         if len(value) > settings.CLAWAGORA_MAX_METADATA_KEYS:
-            raise serializers.ValidationError("Too many metadata keys.")
+            raise serializers.ValidationError("Too many keys in metadata patch.")
         return value
 
 

@@ -214,6 +214,24 @@ def build_default_pipeline() -> TaskPipeline:
     )
 
 
+_DEFAULT_EXECUTOR_LABELS: dict[str, str] = {
+    "executor_transform": "Transform",
+    "executor_echo": "Echo",
+    "executor_coding": "Coding",
+    "executor_research": "Research",
+    "executor_support": "Support",
+}
+
+
+def list_default_pipeline_executors() -> list[dict[str, str]]:
+    """Ids and labels for executors on the default TaskPipeline (legislative allowlist source of truth)."""
+    pipeline = build_default_pipeline()
+    out: list[dict[str, str]] = []
+    for eid in pipeline._registry.registered_executor_ids():
+        out.append({"id": eid, "label": _DEFAULT_EXECUTOR_LABELS.get(eid, eid)})
+    return out
+
+
 class OrchestrationService:
     def __init__(
         self,
@@ -1001,6 +1019,16 @@ class OrchestrationService:
             oc2["callback_at"] = timezone.now().isoformat()
             if ext_id:
                 oc2["external_id"] = ext_id
+            from orchestration.openclaw_callback_artifacts import (
+                OPENCLAW_CALLBACK_SCHEMA,
+                normalize_openclaw_callback_artifacts,
+            )
+
+            artifacts, art_err = normalize_openclaw_callback_artifacts(payload.get("artifacts"))
+            if art_err:
+                raise TaskConflict(detail=art_err)
+            oc2["callback_schema"] = OPENCLAW_CALLBACK_SCHEMA
+            oc2["artifacts"] = artifacts
             md["openclaw"] = oc2
             locked.metadata = md
             if st == "failed":
@@ -1029,6 +1057,7 @@ class OrchestrationService:
                 "agents": payload.get("agents"),
                 "external_id": payload.get("external_id"),
             }
+            body["openclaw_artifacts"] = artifacts
             body_hash = hash_body(body)
             Receipt.objects.update_or_create(
                 task=locked,
@@ -1040,7 +1069,11 @@ class OrchestrationService:
                 sequence=1,
                 phase=TaskPhase.TERMINAL.value,
                 kind="openclaw_completed",
-                payload={"source": "openclaw_callback"},
+                payload={
+                    "source": "openclaw_callback",
+                    "artifact_count": len(artifacts),
+                    "artifact_roles": [a.get("role", "") for a in artifacts[:24]],
+                },
             )
             locked.status = Task.Status.COMPLETED
             locked.error_code = ""

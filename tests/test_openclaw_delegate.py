@@ -10,7 +10,7 @@ import pytest
 from django.db import connection
 from django.test import Client, override_settings
 
-from orchestration.openclaw_delegate import sign_body
+from orchestration.openclaw_delegate import build_delegate_payload, sign_body
 from orchestration.models import Task
 
 
@@ -43,6 +43,32 @@ def _create_delegated_task(c: Client) -> str:
     CLAWAGORA_OPENCLAW_DELEGATE_URL="http://bridge.test/delegate",
     CLAWAGORA_PUBLIC_BASE_URL="http://api.example",
     CLAWAGORA_OPENCLAW_WEBHOOK_SECRET="testsecret",
+    CLAWAGORA_OPENCLAW_AGENT_CONFIG_JSON='{"default_agents":["a","b"],"by_risk":{"high":["h1"]}}',
+)
+def test_build_delegate_payload_includes_context_from_metadata():
+    md = {
+        "openclaw": {"delegate": True},
+        "clawagora_context": {"session_id": "sess-1", "memory_refs": ["m1"]},
+    }
+    p = build_delegate_payload(
+        task_id="00000000-0000-0000-0000-000000000001",
+        input_text="hi",
+        metadata=md,
+        risk_tier="low",
+        agents=["a1"],
+        callback_url="http://x/cb",
+    )
+    assert p["metadata"] == md
+    assert p["context"] == {"session_id": "sess-1", "memory_refs": ["m1"]}
+    assert p["callback_schema"] == "clawagora.openclaw.callback.v1"
+
+
+@pytest.mark.django_db
+@override_settings(
+    CLAWAGORA_OPENCLAW_DELEGATE_ENABLED=True,
+    CLAWAGORA_OPENCLAW_DELEGATE_URL="http://bridge.test/delegate",
+    CLAWAGORA_PUBLIC_BASE_URL="http://api.example",
+    CLAWAGORA_OPENCLAW_WEBHOOK_SECRET="x",
     CLAWAGORA_OPENCLAW_AGENT_CONFIG_JSON='{"default_agents":["a","b"],"by_risk":{"high":["h1"]}}',
 )
 def test_openclaw_status_includes_delegate_snapshot():
@@ -109,6 +135,99 @@ def test_create_with_delegate_metadata_runs_openclaw_path_and_callback_completes
     done = r3.json()
     assert done["status"] == "completed"
     assert done["receipt"]["body"]["source"] == "openclaw"
+    assert done["receipt"]["body"].get("openclaw_artifacts") == []
+
+
+@pytest.mark.django_db
+@override_settings(
+    CLAWAGORA_OPENCLAW_DELEGATE_ENABLED=True,
+    CLAWAGORA_OPENCLAW_DELEGATE_URL="http://openclaw.test/delegate",
+    CLAWAGORA_PUBLIC_BASE_URL="http://clawagora.test",
+    CLAWAGORA_OPENCLAW_WEBHOOK_SECRET="testsecret",
+    CLAWAGORA_OPENCLAW_AGENT_CONFIG_JSON='{"default_agents":["a1"]}',
+)
+def test_openclaw_callback_persists_artifacts_and_receipt():
+    c = Client()
+    with patch(
+        "orchestration.openclaw_delegate.post_delegate",
+        return_value=(True, 200, "ok"),
+    ):
+        r = c.post(
+            "/api/v1/tasks/",
+            data={
+                "input_text": "Design API.",
+                "metadata": {"openclaw": {"delegate": True}},
+            },
+            content_type="application/json",
+        )
+    assert r.status_code == 201
+    task_id = r.json()["id"]
+    payload = {
+        "task_id": task_id,
+        "status": "completed",
+        "synthesis": {"summary": "final"},
+        "artifacts": [
+            {"role": "proposal", "agent_id": "p1", "content": "Plan A"},
+            {"role": "critique", "text": "Add tests", "meta": {"severity": "low"}},
+        ],
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    r3 = c.post(
+        "/api/v1/integrations/openclaw/callback/",
+        data=raw,
+        content_type="application/json",
+        **_callback_headers("testsecret", raw),
+    )
+    assert r3.status_code == 200, r3.content
+    done = r3.json()
+    arts = done["metadata"]["openclaw"]["artifacts"]
+    assert len(arts) == 2
+    assert arts[0]["role"] == "proposal"
+    assert arts[0]["content"] == "Plan A"
+    assert arts[1]["role"] == "critique"
+    assert arts[1]["content"] == "Add tests"
+    assert arts[1]["meta"] == {"severity": "low"}
+    rb = done["receipt"]["body"]
+    assert rb["openclaw_artifacts"] == arts
+
+
+@pytest.mark.django_db
+@override_settings(
+    CLAWAGORA_OPENCLAW_DELEGATE_ENABLED=True,
+    CLAWAGORA_OPENCLAW_DELEGATE_URL="http://openclaw.test/delegate",
+    CLAWAGORA_PUBLIC_BASE_URL="http://clawagora.test",
+    CLAWAGORA_OPENCLAW_WEBHOOK_SECRET="testsecret",
+    CLAWAGORA_OPENCLAW_AGENT_CONFIG_JSON='{"default_agents":["a1"]}',
+)
+def test_openclaw_callback_rejects_non_list_artifacts():
+    c = Client()
+    with patch(
+        "orchestration.openclaw_delegate.post_delegate",
+        return_value=(True, 200, "ok"),
+    ):
+        r = c.post(
+            "/api/v1/tasks/",
+            data={
+                "input_text": "x",
+                "metadata": {"openclaw": {"delegate": True}},
+            },
+            content_type="application/json",
+        )
+    task_id = r.json()["id"]
+    payload = {
+        "task_id": task_id,
+        "status": "completed",
+        "synthesis": {"summary": "x"},
+        "artifacts": "not-a-list",
+    }
+    raw = json.dumps(payload).encode("utf-8")
+    r3 = c.post(
+        "/api/v1/integrations/openclaw/callback/",
+        data=raw,
+        content_type="application/json",
+        **_callback_headers("testsecret", raw),
+    )
+    assert r3.status_code == 409
 
 
 @pytest.mark.django_db

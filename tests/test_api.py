@@ -1184,13 +1184,13 @@ def test_policy_draft_create_and_list():
     c = Client()
     r = c.post(
         "/api/v1/policies/",
-        data={"name": "safety-v1", "content": {"deny_terms": ["secret", "password"]}},
+        data={"name": "safety-v1", "content": {"deny_patterns": ["secret", "password"]}},
         content_type="application/json",
     )
     assert r.status_code == 201
     draft = r.json()
     assert draft["name"] == "safety-v1"
-    assert draft["content"]["deny_terms"] == ["secret", "password"]
+    assert draft["content"]["deny_patterns"] == ["secret", "password"]
 
     r2 = c.get("/api/v1/policies/")
     assert r2.status_code == 200
@@ -1203,18 +1203,18 @@ def test_policy_draft_patch_and_delete():
     c = Client()
     r = c.post(
         "/api/v1/policies/",
-        data={"name": "temp-policy", "content": {"version": 1}},
+        data={"name": "temp-policy", "content": {"_clawagora_version": 1}},
         content_type="application/json",
     )
     draft_id = r.json()["id"]
 
     r2 = c.patch(
         f"/api/v1/policies/{draft_id}/",
-        data={"name": "temp-policy", "content": {"version": 2}},
+        data={"name": "temp-policy", "content": {"_clawagora_version": 2}},
         content_type="application/json",
     )
     assert r2.status_code == 200
-    assert r2.json()["content"]["version"] == 2
+    assert r2.json()["content"]["_clawagora_version"] == 2
 
     r3 = c.delete(f"/api/v1/policies/{draft_id}/")
     assert r3.status_code == 204
@@ -1874,3 +1874,53 @@ def test_policy_write_requires_policy_key():
     assert r_no_key.status_code == 403
     assert r_wrong_key.status_code == 403
     assert r_good_key.status_code != 403
+
+
+@pytest.mark.django_db
+def test_amend_merges_metadata_clawagora_context_and_openclaw():
+    """PATCH amend deep-merges nested metadata so context + delegate flags stay coherent."""
+    t = Task.objects.create(
+        input_text="x",
+        status=Task.Status.FAILED,
+        metadata={
+            "clawagora_context": {"session_id": "sess-a"},
+            "openclaw": {"delegate": False},
+        },
+    )
+    c = Client()
+    r = c.patch(
+        f"/api/v1/tasks/{t.id}/amend/",
+        data={
+            "metadata": {
+                "clawagora_context": {"correlation_id": "c1"},
+                "openclaw": {"agents": ["a1"]},
+            }
+        },
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.content
+    body = r.json()
+    assert body["metadata"]["clawagora_context"] == {
+        "session_id": "sess-a",
+        "correlation_id": "c1",
+    }
+    assert body["metadata"]["openclaw"]["delegate"] is False
+    assert body["metadata"]["openclaw"]["agents"] == ["a1"]
+
+
+@pytest.mark.django_db
+def test_amend_rejects_invalid_clawagora_context_after_merge():
+    t = Task.objects.create(
+        input_text="x",
+        status=Task.Status.FAILED,
+        metadata={"clawagora_context": {"session_id": "ok"}},
+    )
+    c = Client()
+    r = c.patch(
+        f"/api/v1/tasks/{t.id}/amend/",
+        data={"metadata": {"clawagora_context": {"unknown_key": 1}}},
+        content_type="application/json",
+    )
+    assert r.status_code == 400
+    err_body = r.json()
+    assert "clawagora_context" in err_body or "detail" in err_body

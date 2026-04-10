@@ -13,6 +13,9 @@ from typing import Any
 
 from django.core.cache import cache
 
+from orchestration.metadata_context import extract_delegate_context_bundle
+from orchestration.openclaw_callback_artifacts import OPENCLAW_CALLBACK_SCHEMA
+
 logger = logging.getLogger(__name__)
 
 
@@ -177,7 +180,7 @@ def build_delegate_payload(
     agents: list[str],
     callback_url: str | None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "schema": "clawagora.openclaw.delegate.v1",
         "task_id": task_id,
         "input_text": input_text,
@@ -185,4 +188,10 @@ def build_delegate_payload(
         "risk_tier": risk_tier,
         "agents": agents,
         "callback_url": callback_url,
+        # Bridge may complete with optional top-level ``artifacts`` (see OPENCLAW_CALLBACK_SCHEMA).
+        "callback_schema": OPENCLAW_CALLBACK_SCHEMA,
     }
+    ctx = extract_delegate_context_bundle(metadata)
+    if ctx:
+        payload["context"] = ctx
+    return payload

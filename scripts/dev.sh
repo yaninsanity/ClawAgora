@@ -6,4 +6,5 @@ export PYTHONPATH="${ROOT}/src:${ROOT}/apps/server"
 export DJANGO_SETTINGS_MODULE="clawagora_server.settings"
 
 cd "${ROOT}/apps/server"
-exec python manage.py runserver 0.0.0.0:8000
+PY="${PYTHON:-python3}"
+exec "${PY}" manage.py runserver 0.0.0.0:8000

@@ -38,30 +38,46 @@ function summarize(ev: TimelineEvent): string {
   if (ev.phase === "terminal" && ev.kind === "completed") {
     return "Pipeline completed";
   }
+  if (ev.phase === "terminal" && ev.kind === "openclaw_completed") {
+    const n = Number((ev.payload as { artifact_count?: number }).artifact_count ?? 0);
+    const roles = (ev.payload as { artifact_roles?: string[] }).artifact_roles ?? [];
+    const roleHint = roles.length > 0 ? ` · ${roles.slice(0, 5).join(", ")}` : "";
+    return n > 0 ? `OpenClaw · ${n} artifact${n === 1 ? "" : "s"}${roleHint}` : "OpenClaw · done";
+  }
   return `${ev.phase} · ${ev.kind}`;
 }
 
-function evClass(ev: TimelineEvent): string {
-  if (ev.phase === "terminal" && ev.kind === "failed") return "event ev-failed";
-  if (ev.phase === "terminal" && ev.kind === "completed") return "event ev-completed";
-  return "event";
+function evStatusClass(ev: TimelineEvent): string {
+  if (ev.phase === "terminal" && ev.kind === "failed") return "ev-failed";
+  if (ev.phase === "terminal" && ev.kind === "completed") return "ev-completed";
+  if (ev.phase === "terminal" && ev.kind === "openclaw_completed") return "ev-completed ev-openclaw";
+  return "";
 }
 
 export function TaskTimeline(props: { events: TimelineEvent[] }) {
   const sorted = [...props.events].sort((a, b) => a.sequence - b.sequence);
   if (sorted.length === 0) return null;
   return (
-    <div className="timeline">
-      {sorted.map((ev) => (
-        <div key={`${ev.sequence}-${ev.phase}-${ev.kind}`} className={evClass(ev)}>
-          <div className="row" style={{ gap: 6, marginBottom: 2 }}>
-            <span className="pill pill-sm">{ev.phase}</span>
-            <span className="muted">#{ev.sequence}</span>
-          </div>
-          <div style={{ fontSize: 12 }}>{summarize(ev)}</div>
-        </div>
-      ))}
-    </div>
+    <section className="timeline" aria-label="Execution timeline">
+      <h3 className="timeline-heading">Timeline</h3>
+      <ol className="timeline-list">
+        {sorted.map((ev) => {
+          const st = evStatusClass(ev);
+          return (
+          <li
+            key={`${ev.sequence}-${ev.phase}-${ev.kind}`}
+            className={st ? `timeline-item ${st}` : "timeline-item"}
+          >
+            <div className="row" style={{ gap: 6, marginBottom: 2 }}>
+              <span className="pill pill-sm">{ev.phase}</span>
+              <span className="muted">#{ev.sequence}</span>
+            </div>
+            <div className="timeline-summary">{summarize(ev)}</div>
+          </li>
+        );
+        })}
+      </ol>
+    </section>
   );
 }
 

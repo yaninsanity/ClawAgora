@@ -20,6 +20,10 @@ class ExecutorRegistry:
     def __init__(self, executors: list[Executor]) -> None:
         self._by_id = {e.executor_id: e for e in executors}
 
+    def registered_executor_ids(self) -> list[str]:
+        """Stable-sorted ids (e.g. for policy allowlists and operator UIs)."""
+        return sorted(self._by_id.keys())
+
     def get(self, executor_id: str) -> Executor:
         if executor_id not in self._by_id:
             raise KeyError(f"Unknown executor: {executor_id}")

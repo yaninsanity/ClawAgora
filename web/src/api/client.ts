@@ -119,6 +119,60 @@ export type GovernanceDashboard = {
   daily_budget_remaining: Record<string, number>;
   leaderboard_top: unknown[];
   alerts: unknown[];
+  tasks_scanned?: number;
+  narrative?: string;
+};
+
+export type GovernanceSummary = {
+  schema: string;
+  version: string;
+  policy: {
+    has_active_policy: boolean;
+    active_policy_id: string | null;
+    active_policy_name: string | null;
+    active_policy_updated_at: string | null;
+    draft_count: number;
+  };
+  capabilities: {
+    require_sha256: boolean;
+    require_source_url: boolean;
+    active_bundle_count: number;
+    total_bundle_count: number;
+    offender_count: number;
+    offenders: Array<{ id: string; slug: string; reasons: string[] }>;
+  };
+  prompts: {
+    circuit_breaker: {
+      enabled: boolean;
+      min_samples: number;
+      error_rate_max: number;
+      avg_cost_usd_max: number;
+      metrics_ttl_seconds: number;
+      cooldown_seconds: number;
+      fallback_version_default: string;
+    };
+    registry_keys: Array<{
+      prompt_key: string;
+      circuit_forced_version: string | null;
+      versions: Array<{
+        version: string;
+        rollout: number;
+        metrics: Record<string, unknown> | null;
+      }>;
+    }>;
+  };
+  integrations: {
+    openclaw_delegate: {
+      enabled?: boolean;
+      url_configured?: boolean;
+      callback_url?: string | null;
+      callback_guard_cache_backend?: string;
+      knowledge?: {
+        capability_require_sha256: boolean;
+        capability_require_source_url: boolean;
+      };
+    };
+  };
 };
 
 
@@ -315,6 +369,27 @@ export async function fetchGovernanceDashboard(): Promise<GovernanceDashboard> {
   return JSON.parse(text) as GovernanceDashboard;
 }
 
+export async function fetchGovernanceSummary(): Promise<GovernanceSummary> {
+  const res = await fetch(base() + "/api/v1/governance/summary/");
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as GovernanceSummary;
+}
+
+export type GovernanceExecutorOption = { id: string; label: string };
+
+export type GovernanceExecutorsPayload = {
+  schema: string;
+  executors: GovernanceExecutorOption[];
+};
+
+/** Legislative allowlist ids — matches the server TaskPipeline registry. */
+export async function fetchGovernanceExecutors(): Promise<GovernanceExecutorsPayload> {
+  const res = await fetch(base() + "/api/v1/governance/executors/");
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as GovernanceExecutorsPayload;
+}
 
 export async function listPolicies(): Promise<PolicyDraft[]> {
   const res = await fetch(base() + "/api/v1/policies/");
@@ -345,6 +420,20 @@ export async function deletePolicy(policyId: string): Promise<void> {
     const text = await res.text();
     throw parseError(res, text);
   }
+}
+
+export async function updatePolicy(
+  policyId: string,
+  body: { name?: string; content?: Record<string, unknown> },
+): Promise<PolicyDraft> {
+  const res = await fetch(base() + `/api/v1/policies/${policyId}/`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as PolicyDraft;
 }
 
 function isAwaitingOpenClawCallback(t: TaskRecord): boolean {
@@ -525,5 +614,98 @@ export async function listCapabilities(activeOnly?: boolean): Promise<Capability
   const text = await res.text();
   if (!res.ok) throw parseError(res, text);
   return JSON.parse(text) as CapabilityBundle[];
+}
+
+export type ApprovalPolicyTemplateRow = {
+  slug: string;
+  name: string;
+  quorum: number;
+  description: string;
+  sort_order: number;
+};
+
+export type GovernanceApprovalTemplatesPayload = {
+  schema: string;
+  runtime: {
+    approval_gate_mode: string;
+    approval_quorum: number;
+    majority_threshold: number;
+  };
+  templates: ApprovalPolicyTemplateRow[];
+  org_recommendation: Record<string, unknown> | null;
+};
+
+/** Judicial quorum presets; pass orgSlug for org-bound CLAWAGORA_APPROVAL_QUORUM recommendation. */
+export async function fetchGovernanceApprovalTemplates(
+  orgSlug?: string
+): Promise<GovernanceApprovalTemplatesPayload> {
+  const q = orgSlug ? `?org_slug=${encodeURIComponent(orgSlug)}` : "";
+  const res = await fetch(base() + "/api/v1/governance/approval-templates/" + q);
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as GovernanceApprovalTemplatesPayload;
+}
+
+export type OrganizationUnitRow = {
+  id: string;
+  slug: string;
+  name: string;
+  parent_id: string | null;
+  approval_template_slug: string | null;
+  created_at: string;
+};
+
+export async function fetchOrganizationUnits(): Promise<OrganizationUnitRow[]> {
+  const res = await fetch(base() + "/api/v1/governance/organization-units/");
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as OrganizationUnitRow[];
+}
+
+export async function patchOrganizationUnit(
+  unitId: string,
+  body: { approval_template_slug?: string | null; name?: string }
+): Promise<OrganizationUnitRow> {
+  const res = await fetch(base() + `/api/v1/governance/organization-units/${unitId}/`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as OrganizationUnitRow;
+}
+
+export type PolicyEvolutionProposalRow = {
+  id: string;
+  proposed_content: Record<string, unknown>;
+  source: string;
+  rationale: string;
+  status: string;
+  created_at: string;
+  resolved_at: string | null;
+  resolution_note: string;
+  derived_policy_draft_id: string | null;
+};
+
+export async function fetchPolicyProposals(): Promise<PolicyEvolutionProposalRow[]> {
+  const res = await fetch(base() + "/api/v1/policies/proposals/");
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as PolicyEvolutionProposalRow[];
+}
+
+export async function resolvePolicyProposal(
+  proposalId: string,
+  body: { action: "accept" | "reject"; draft_name?: string; note?: string }
+): Promise<PolicyEvolutionProposalRow> {
+  const res = await fetch(base() + `/api/v1/policies/proposals/${proposalId}/`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw parseError(res, text);
+  return JSON.parse(text) as PolicyEvolutionProposalRow;
 }
 

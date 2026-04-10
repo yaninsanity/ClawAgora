@@ -413,6 +413,20 @@ CLAWAGORA_APPROVAL_ALLOWED_VOTERS: list[str] = [
 ]
 CLAWAGORA_POLICY_KEY: str = os.environ.get("CLAWAGORA_POLICY_KEY", "").strip()
 CLAWAGORA_GOVERNANCE_KEY: str = os.environ.get("CLAWAGORA_GOVERNANCE_KEY", "").strip()
+
+# Optional IdP edge: header name whose value is copied into task.metadata["external_subject"].
+# Use only behind a trusted reverse proxy that sets the header from verified OIDC/SAML claims.
+CLAWAGORA_IDENTITY_EXTERNAL_SUBJECT_HEADER: str = (
+    os.environ.get("CLAWAGORA_IDENTITY_EXTERNAL_SUBJECT_HEADER", "").strip()
+)
+
+# Cap rows hashed by GET /api/v1/governance/audit-anchor/
+CLAWAGORA_AUDIT_ANCHOR_MAX_EVENTS: int = parse_positive_int(
+    "CLAWAGORA_AUDIT_ANCHOR_MAX_EVENTS",
+    os.environ.get("CLAWAGORA_AUDIT_ANCHOR_MAX_EVENTS"),
+    500,
+    minimum=1,
+)
 CLAWAGORA_GOVERNANCE_DAILY_BUDGET_MINIMAL_BPS: int = parse_positive_int(
     "CLAWAGORA_GOVERNANCE_DAILY_BUDGET_MINIMAL_BPS",
     os.environ.get("CLAWAGORA_GOVERNANCE_DAILY_BUDGET_MINIMAL_BPS"),

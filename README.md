@@ -65,14 +65,42 @@ export POSTGRES_USER=clawagora
 export POSTGRES_PASSWORD=clawagora
 ```
 
+On first migrate, migration `0014_seed_starter_policy_draft` inserts an **inactive** draft named `starter-guide (seed)` so the Policies tab is not empty. It is safe to delete in the UI.
+
 ## Run API
+
+**Precise first run**
+
+1. **Python 3.11+** and **Node 18+** (Node only if you build the web UI).
+2. `python3 -m venv .venv && source .venv/bin/activate` (Windows: `.venv\Scripts\activate`).
+3. From the repo root: `pip install -e ".[server,dev]"` — add `async` in the extras list if you use RQ (`pip install -e ".[server,async,dev]"`).
+4. Set env and migrate, then start the server (scripts default to `python3`; override with `PYTHON=...` if needed):
 
 ```bash
 export PYTHONPATH="$(pwd)/src:$(pwd)/apps/server"
 export DJANGO_SETTINGS_MODULE=clawagora_server.settings
-python apps/server/manage.py migrate
+python3 apps/server/manage.py migrate
 bash scripts/dev.sh
 ```
+
+5. API: **http://127.0.0.1:8000/api/v1/health/**  
+6. **Optional UI**: `cd web && npm ci && npm run build` — Django serves `web/dist` at **http://127.0.0.1:8000/** (see `clawagora_server/urls.py`). For Vite HMR during UI work: `npm run dev` in `web/` (proxies `/api` to port 8000).
+
+**Concept closure (task → bridge)**
+
+- Create tasks with optional `metadata.clawagora_context`: `session_id`, `correlation_id`, `memory_refs` (string array) — validated on create and after **amend** merge.
+- OpenClaw **delegate** POST body is `clawagora.openclaw.delegate.v1`: includes full `metadata` and, when context is set, a top-level **`context`** mirror so bridges do not have to dig for correlation IDs.
+- `PATCH .../amend/` **merges** `metadata` into the existing task (shallow merge; **`clawagora_context`** and **`openclaw`** are merged one level deep), then reapplies size limits and `clawagora_context` validation.
+
+**Control plane map (UI ↔ concern)** — one screen, separated duties (intake vs review vs legislation vs ops):
+
+| UI area | Primary concern | Main API / artifact |
+|--------|-------------------|---------------------|
+| **Start a run** (left) | Submit work, optional async / delegate / `clawagora_context` | `POST /api/v1/tasks/` |
+| **Result** (left) | Timeline, receipt, stored context, OpenClaw phase | `GET …/timeline/`, `…/receipt/`, task `metadata` |
+| **Tasks tab** (right) | History queue, filters, click to inspect | `GET /api/v1/tasks/` |
+| **Policies tab** (right) | Policy drafts: create, activate, deactivate all | `GET|POST /api/v1/policies/`, `…/activate/`, `…/deactivate/` |
+| **Governance tab** (right) | Strictness level (minimal/balanced/strict), daily budget, alerts | `GET|POST /api/v1/governance/profiles/`, `/governance/dashboard/` |
 
 ## Docker quick start
 
@@ -122,9 +150,9 @@ HTTP API (JSON):
 
 - `GET /api/v1/health/` — liveness: database check; includes **`version`** (from `clawagora.version`) and optional **`git_sha`** (from `GIT_SHA` or `SOURCE_COMMIT` env); includes cache summary (`cache.backend`, `cache.shared`, `cache.status`), plus **Redis + queue metrics** when `django_rq` is installed (`queued_jobs`, `started_jobs`, `deferred_jobs`)
 - `GET /api/v1/tasks/` — list tasks (`?status=` includes `needs_revision`; `?risk_tier=low|medium|high`; `?q=` substring on `input_text`; `?judicial_queue=1` for `pending_approval`; `?limit=`, `?offset=`); returns `count`, `limit`, `offset`, `results[]`
-- `POST /api/v1/tasks/` — create and execute a task (body: `{ "input_text": "...", "metadata": {} }`). Returns `201` (sync completed), `202` (async queued **or** paused for human approval), with `Location` header pointing at the task resource.
+- `POST /api/v1/tasks/` — create and execute a task (body: `{ "input_text": "...", "metadata": {} }`). Optional `metadata.clawagora_context`: `{ "session_id"?, "correlation_id"?, "memory_refs"? }` (string array, bounded) for cross-run correlation / external memory handles; duplicated on delegate POST as `context`. Returns `201` (sync completed), `202` (async queued **or** paused for human approval), with `Location` header pointing at the task resource.
 - `POST /api/v1/tasks/<uuid>/retry/` — retry a **failed** or **`needs_revision`** (judicial reject) task
-- `PATCH /api/v1/tasks/<uuid>/amend/` — edit `input_text` / `metadata` on **`failed`** or **`needs_revision`** tasks before retry
+- `PATCH /api/v1/tasks/<uuid>/amend/` — edit `input_text` / `metadata` on **`failed`** or **`needs_revision`** tasks before retry; `metadata` is **merged** into the stored task (nested merge for `clawagora_context` and `openclaw`)
 - `POST /api/v1/tasks/<uuid>/cancel/` — cancel a task in `received` or `queued` state before execution starts
 - `POST /api/v1/tasks/<uuid>/inject/` — inject operator guidance into a running task (appends a `guidance` event to the timeline)
 - `POST /api/v1/tasks/<uuid>/replay/` — forensic replay of a completed task; body: `{ "mode": "events" | "decisions" }`
@@ -133,7 +161,7 @@ HTTP API (JSON):
 - `GET /api/v1/tasks/<uuid>/receipt/`
 - `GET /api/v1/tasks/<uuid>/governance/` — governance loop snapshot (narrative stage, role weights, efficiency signals, recent governance timeline)
 - `POST /api/v1/tasks/<uuid>/approve/` — operator approval for a `pending_approval` task; body: `{ "voter_id": "...", "rationale": "..." }`
-- `POST /api/v1/tasks/<uuid>/reject/` — operator rejection for a `pending_approval` task; on quorum reject the task becomes **`needs_revision`** (封驳返工), not terminal `failed`; body: `{ "voter_id": "...", "rationale": "..." }`
+- `POST /api/v1/tasks/<uuid>/reject/` — operator rejection for a `pending_approval` task; on quorum reject the task becomes **`needs_revision`** (returned for revision), not terminal `failed`; body: `{ "voter_id": "...", "rationale": "..." }`
 - `POST /api/v1/tasks/<uuid>/vote/` — cast a named quorum vote (for multi-reviewer approval); body: `{ "voter_id": "...", "decision": "approve" | "reject", "rationale": "..." }`
 - `GET /api/v1/tasks/<uuid>/votes/` — list all cast votes for an approval request
 - `GET|POST /api/v1/policies/` — list or create policy drafts; body on POST: `{ "name": "...", "content": { "allowed_executors": [], "deny_patterns": [] } }`
@@ -143,8 +171,8 @@ HTTP API (JSON):
 - `GET /api/v1/policies/activation-log/` — legislative audit log of policy activations / deactivate-all (`?limit=`)
 - `GET|POST /api/v1/capabilities/` — list or register **capability bundle** metadata (skill/doc URL inventory); `GET|PATCH|DELETE /api/v1/capabilities/<uuid>/`
 - `GET /api/v1/integrations/openclaw/status/` — optional OpenClaw gateway health probe (see `CLAWAGORA_OPENCLAW_*`); response always includes a sanitized `delegate` object (bridge URL, callback URL, agent defaults, webhook configured flag — never the secret)
-- `POST /api/v1/integrations/openclaw/callback/` — signed callback from an external OpenClaw **bridge** (HMAC `X-ClawAgora-Signature`); completes or fails a task in `awaiting_callback`
-- `POST /api/v1/tasks/<uuid>/integrations/openclaw/delegate/` — set `metadata.openclaw.delegate` and run (optional body `agents[]`); requires `CLAWAGORA_OPENCLAW_DELEGATE_ENABLED` and delegate URL for execution
+- `POST /api/v1/integrations/openclaw/callback/` — signed callback from an external OpenClaw **bridge** (HMAC `X-ClawAgora-Signature`); completes or fails a task in `awaiting_callback`. Optional top-level **`artifacts`** array (`clawagora.openclaw.callback.v1`): each item is `{ "role": string, "content" or "text": string, optional "agent_id", optional "meta": { ... } }` for multi-agent proposal/critique/review lanes. Normalized artifacts are stored on `metadata.openclaw.artifacts` and on `receipt.body.openclaw_artifacts`; timeline `openclaw_completed` includes counts/roles.
+- `POST /api/v1/tasks/<uuid>/integrations/openclaw/delegate/` — set `metadata.openclaw.delegate` and run (optional body `agents[]`); requires `CLAWAGORA_OPENCLAW_DELEGATE_ENABLED` and delegate URL for execution. Delegate payloads include **`callback_schema`: `clawagora.openclaw.callback.v1`** so bridges know they may attach `artifacts`.
 
 Full operator spec (three-powers rollout): **docs/GOVERNANCE_THREE_PHASES.md**.
 - `POST /api/v1/governance/feedback/` — apply manual accountability feedback to a task (`task_id`, `entries[]`, optional `source`); updates metadata and appends a dedicated `governance` timeline event
@@ -244,7 +272,7 @@ Environment (selected):
 | `CLAWAGORA_OPENCLAW_API_KEY` | Optional bearer token for the gateway probe |
 | `CLAWAGORA_OPENCLAW_STATUS_TIMEOUT_SEC` | Probe timeout in seconds (default `3`) |
 | `CLAWAGORA_OPENCLAW_DELEGATE_ENABLED` | `1` allows `metadata.openclaw.delegate=true` to POST to an external bridge instead of local kernel |
-| `CLAWAGORA_OPENCLAW_DELEGATE_URL` | Bridge URL for delegate JSON (`clawagora.openclaw.delegate.v1`). |
+| `CLAWAGORA_OPENCLAW_DELEGATE_URL` | Bridge URL for delegate JSON (`clawagora.openclaw.delegate.v1`; body includes `metadata`, optional top-level `context` when `metadata.clawagora_context` is set). |
 | `CLAWAGORA_OPENCLAW_DELEGATE_TIMEOUT_SEC` | Delegate POST timeout (default `60`) |
 | `CLAWAGORA_PUBLIC_BASE_URL` | Public API origin (no trailing slash) for `callback_url` in delegate payloads |
 | `CLAWAGORA_OPENCLAW_WEBHOOK_SECRET` | HMAC secret for `X-ClawAgora-Signature` on `POST /api/v1/integrations/openclaw/callback/` |

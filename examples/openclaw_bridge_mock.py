@@ -57,6 +57,9 @@ def _background_execute(delegate: dict) -> None:
     callback_url = str(delegate.get("callback_url") or "").strip()
     task_id = str(delegate.get("task_id") or "").strip()
     agents = delegate.get("agents") if isinstance(delegate.get("agents"), list) else []
+    ctx = delegate.get("context")
+    if isinstance(ctx, dict) and ctx:
+        print(f"[bridge] task={task_id} context={ctx!r}")
     if not callback_url or not task_id or not WEBHOOK_SECRET:
         return
     if DEFAULT_STATUS == "failed":
@@ -69,13 +72,32 @@ def _background_execute(delegate: dict) -> None:
             "agents": agents,
         }
     else:
+        agent_list = [str(a) for a in agents] if agents else ["default-agent"]
+        primary = agent_list[0]
+        critic = agent_list[1] if len(agent_list) > 1 else f"{primary}-critic"
+        input_preview = str(delegate.get("input_text") or "")[:120]
         payload = {
             "task_id": task_id,
             "status": "completed",
             "synthesis": {
-                "summary": "Bridge simulated multi-agent completion.",
-                "artifacts": [],
+                "summary": "Bridge simulated multi-agent completion (proposal + critique merged).",
+                "conclusion": "Accepted after external agent review.",
             },
+            # Top-level artifacts: clawagora.openclaw.callback.v1 (see delegate payload callback_schema).
+            "artifacts": [
+                {
+                    "role": "proposal",
+                    "agent_id": primary,
+                    "content": f"Draft answer for: {input_preview!r} …",
+                    "meta": {"lane": "proposer"},
+                },
+                {
+                    "role": "critique",
+                    "agent_id": critic,
+                    "content": "Checks: scope OK, add rollback note for production.",
+                    "meta": {"lane": "review"},
+                },
+            ],
             "external_id": f"mock-{task_id[:8]}",
             "agents": agents,
         }

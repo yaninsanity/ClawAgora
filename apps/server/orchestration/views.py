@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections import defaultdict
 from datetime import timedelta
@@ -10,7 +11,7 @@ from django.http import Http404
 from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.exceptions import APIException
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -25,6 +26,7 @@ from clawagora.governance.profile import (
 )
 from clawagora.governance.replay import ReplayBundle, ReplayMode
 from orchestration.app_settings import (
+    approval_gate_config,
     governance_alert_budget_threshold,
     governance_alert_low_efficiency_threshold,
     governance_daily_budget,
@@ -45,7 +47,13 @@ from orchestration.leaderboard import (
     profile_title as _profile_title,
     today_used_budget,
 )
+from orchestration.metadata_context import (
+    assert_task_metadata_within_limits,
+    merge_patch_task_metadata,
+    normalize_task_metadata_clawagora_context,
+)
 from orchestration.models import (
+    ApprovalPolicyTemplate,
     ApprovalRequest,
     CapabilityBundle,
     GovernanceAlertDeadLetter,
@@ -53,20 +61,29 @@ from orchestration.models import (
     GovernanceProfileRevision,
     GovernanceProfileState,
     GovernanceSnapshot,
+    GovernanceSubject,
+    OrganizationUnit,
     PolicyActivationEvent,
     PolicyDraft,
+    PolicyEvolutionProposal,
     Task,
     TaskEvent,
 )
 from orchestration.queue import enqueue_task_execution
 from orchestration.serializers import (
+    ApprovalPolicyTemplateSerializer,
     ApprovalVoteSerializer,
     CapabilityBundlePatchSerializer,
     CapabilityBundleSerializer,
     CapabilityBundleWriteSerializer,
+    GovernanceSubjectSerializer,
+    OrganizationUnitSerializer,
     PolicyActivationEventSerializer,
     PolicyDraftSerializer,
     PolicyDraftWriteSerializer,
+    PolicyEvolutionProposalCreateSerializer,
+    PolicyEvolutionProposalResolveSerializer,
+    PolicyEvolutionProposalSerializer,
     ReceiptSerializer,
     TaskAmendSerializer,
     TaskCreateSerializer,
@@ -74,8 +91,9 @@ from orchestration.serializers import (
     TaskListSerializer,
     TaskSerializer,
 )
+from orchestration.audit_anchor import build_audit_anchor_bundle
 from orchestration.permissions import GovernanceWritePermission, PolicyWritePermission
-from orchestration.services import get_orchestration_service
+from orchestration.services import get_orchestration_service, list_default_pipeline_executors
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +214,24 @@ class TaskCreateView(APIView):
     def post(self, request):
         ser = TaskCreateSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
+        ext_header = (settings.CLAWAGORA_IDENTITY_EXTERNAL_SUBJECT_HEADER or "").strip()
+        if ext_header:
+            raw_sub = (request.headers.get(ext_header) or "").strip()[:256]
+            if raw_sub:
+                meta = dict(ser.validated_data.get("metadata") or {})
+                meta["external_subject"] = raw_sub
+                raw = json.dumps(meta, ensure_ascii=False)
+                if len(raw) > settings.CLAWAGORA_MAX_METADATA_BYTES:
+                    return Response(
+                        {"detail": "Metadata too large after identity binding."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if len(meta) > settings.CLAWAGORA_MAX_METADATA_KEYS:
+                    return Response(
+                        {"detail": "Too many metadata keys after identity binding."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                ser.validated_data["metadata"] = meta
         key = (request.headers.get("Idempotency-Key") or "").strip() or None
         submitted_by = (request.headers.get("X-Submitted-By") or "").strip()[:128]
         mode = resolve_execution_mode(request)
@@ -309,7 +345,16 @@ class TaskAmendView(APIView):
                 locked.input_text = data["input_text"]
                 update_fields.append("input_text")
             if "metadata" in data:
-                locked.metadata = data["metadata"]
+                merged = merge_patch_task_metadata(locked.metadata, data["metadata"])
+                try:
+                    assert_task_metadata_within_limits(merged)
+                    merged = normalize_task_metadata_clawagora_context(merged)
+                except serializers.ValidationError as exc:
+                    det = exc.detail
+                    if isinstance(det, dict):
+                        return Response(det, status=status.HTTP_400_BAD_REQUEST)
+                    return Response({"detail": det}, status=status.HTTP_400_BAD_REQUEST)
+                locked.metadata = merged
                 update_fields.append("metadata")
             locked.save(update_fields=update_fields)
         task = (
@@ -818,6 +863,263 @@ class GovernanceSummaryView(APIView):
 
     def get(self, request):
         return Response(build_governance_summary(), status=status.HTTP_200_OK)
+
+
+class GovernanceExecutorsView(APIView):
+    """Registered executor ids on the default pipeline — aligns legislative allowlists with runtime."""
+
+    def get(self, request):
+        return Response(
+            {
+                "schema": "clawagora.governance.executors.v1",
+                "executors": list_default_pipeline_executors(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class GovernanceApprovalTemplatesView(APIView):
+    """Named quorum presets + runtime quorum; optional ``?org_slug=`` for org-bound CLAWAGORA_APPROVAL_QUORUM hint."""
+
+    def get(self, request):
+        cfg = approval_gate_config()
+        templates = ApprovalPolicyTemplate.objects.all()
+        org_slug = (request.query_params.get("org_slug") or "").strip()
+        org_recommendation: dict | None = None
+        if org_slug:
+            ou = (
+                OrganizationUnit.objects.filter(slug=org_slug)
+                .select_related("approval_template")
+                .first()
+            )
+            if ou and ou.approval_template_id and ou.approval_template:
+                t = ou.approval_template
+                rq = int(t.quorum)
+                thresh = rq // 2 + 1
+                org_recommendation = {
+                    "org_slug": ou.slug,
+                    "org_name": ou.name,
+                    "template_slug": t.slug,
+                    "template_name": t.name,
+                    "recommended_quorum": rq,
+                    "majority_threshold": thresh,
+                    "env_exports": [
+                        f"CLAWAGORA_APPROVAL_QUORUM={rq}",
+                        "CLAWAGORA_APPROVAL_GATE=pending_human",
+                    ],
+                    "matches_runtime_quorum": cfg.quorum == rq,
+                    "matches_runtime_gate": cfg.mode == "pending_human",
+                }
+            elif ou:
+                org_recommendation = {
+                    "org_slug": ou.slug,
+                    "org_name": ou.name,
+                    "template_slug": None,
+                    "template_name": None,
+                    "recommended_quorum": None,
+                    "majority_threshold": None,
+                    "env_exports": [],
+                    "note": (
+                        "No approval template linked to this org. PATCH "
+                        "/api/v1/governance/organization-units/<id>/ with approval_template_slug."
+                    ),
+                }
+            else:
+                org_recommendation = {
+                    "org_slug": org_slug,
+                    "found": False,
+                    "note": "Unknown organization slug.",
+                }
+        return Response(
+            {
+                "schema": "clawagora.governance.approval_templates.v1",
+                "runtime": {
+                    "approval_gate_mode": cfg.mode,
+                    "approval_quorum": cfg.quorum,
+                    "majority_threshold": cfg.quorum // 2 + 1,
+                },
+                "templates": ApprovalPolicyTemplateSerializer(templates, many=True).data,
+                "org_recommendation": org_recommendation,
+            }
+        )
+
+
+class GovernanceAuditAnchorView(APIView):
+    """Rolling hash over policy activations — publish ``root_hash`` off-service (WORM / optional ledger)."""
+
+    def get(self, request):
+        raw = (request.query_params.get("limit") or "").strip()
+        try:
+            lim = int(raw) if raw else None
+        except ValueError:
+            return Response(
+                {"detail": "limit must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(build_audit_anchor_bundle(limit=lim))
+
+
+class GovernanceOrganizationUnitListView(APIView):
+    permission_classes = [GovernanceWritePermission]
+
+    def get(self, request):
+        qs = OrganizationUnit.objects.select_related("approval_template").all()
+        return Response(OrganizationUnitSerializer(qs, many=True).data)
+
+    def post(self, request):
+        if not isinstance(request.data, dict):
+            return Response({"detail": "Invalid body."}, status=status.HTTP_400_BAD_REQUEST)
+        slug = (request.data.get("slug") or "").strip()
+        name = (request.data.get("name") or "").strip()
+        if not slug or not name:
+            return Response(
+                {"detail": "slug and name are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        parent = None
+        parent_id = request.data.get("parent_id")
+        if parent_id:
+            parent = OrganizationUnit.objects.filter(id=parent_id).first()
+            if not parent:
+                return Response({"detail": "parent_id not found."}, status=status.HTTP_400_BAD_REQUEST)
+        tpl = None
+        raw_tpl = (request.data.get("approval_template_slug") or "").strip()
+        if raw_tpl:
+            tpl = ApprovalPolicyTemplate.objects.filter(slug=raw_tpl).first()
+            if not tpl:
+                return Response(
+                    {"detail": f"Unknown approval_template_slug: {raw_tpl!r}."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        u = OrganizationUnit.objects.create(
+            slug=slug[:64], name=name[:128], parent=parent, approval_template=tpl
+        )
+        return Response(OrganizationUnitSerializer(u).data, status=status.HTTP_201_CREATED)
+
+
+class GovernanceOrganizationUnitDetailView(APIView):
+    """PATCH to link an ``ApprovalPolicyTemplate`` (sets recommended quorum for org-scoped hints)."""
+
+    permission_classes = [GovernanceWritePermission]
+
+    def patch(self, request, unit_id):
+        u = (
+            OrganizationUnit.objects.filter(id=unit_id)
+            .select_related("approval_template")
+            .first()
+        )
+        if not u:
+            raise Http404()
+        if not isinstance(request.data, dict):
+            return Response({"detail": "Invalid body."}, status=status.HTTP_400_BAD_REQUEST)
+        if "approval_template_slug" in request.data:
+            raw = (request.data.get("approval_template_slug") or "").strip()
+            if not raw:
+                u.approval_template = None
+            else:
+                tpl = ApprovalPolicyTemplate.objects.filter(slug=raw).first()
+                if not tpl:
+                    return Response(
+                        {"detail": f"Unknown approval_template_slug: {raw!r}."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                u.approval_template = tpl
+        if "name" in request.data:
+            n = (request.data.get("name") or "").strip()
+            if n:
+                u.name = n[:128]
+        u.save()
+        return Response(OrganizationUnitSerializer(u).data)
+
+
+class GovernanceSubjectListView(APIView):
+    permission_classes = [GovernanceWritePermission]
+
+    def get(self, request):
+        qs = GovernanceSubject.objects.select_related("org_unit").all()[:500]
+        return Response(GovernanceSubjectSerializer(qs, many=True).data)
+
+    def post(self, request):
+        if not isinstance(request.data, dict):
+            return Response({"detail": "Invalid body."}, status=status.HTTP_400_BAD_REQUEST)
+        voter_id = (request.data.get("voter_id") or "").strip()[:128]
+        if not voter_id:
+            return Response({"detail": "voter_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        org = None
+        org_id = request.data.get("org_unit_id")
+        if org_id:
+            org = OrganizationUnit.objects.filter(id=org_id).first()
+            if not org:
+                return Response({"detail": "org_unit_id not found."}, status=status.HTTP_400_BAD_REQUEST)
+        subj, _ = GovernanceSubject.objects.update_or_create(
+            voter_id=voter_id,
+            defaults={
+                "external_subject": (request.data.get("external_subject") or "").strip()[:256],
+                "display_name": (request.data.get("display_name") or "").strip()[:256],
+                "org_unit": org,
+                "rank_hint": (request.data.get("rank_hint") or "").strip()[:64],
+            },
+        )
+        return Response(GovernanceSubjectSerializer(subj).data, status=status.HTTP_201_CREATED)
+
+
+class PolicyEvolutionProposalListView(APIView):
+    """Suggested policy JSON — accept/reject only via PATCH (human gate; never auto-activate)."""
+
+    permission_classes = [PolicyWritePermission]
+
+    def get(self, request):
+        qs = PolicyEvolutionProposal.objects.all()[:200]
+        return Response(PolicyEvolutionProposalSerializer(qs, many=True).data)
+
+    def post(self, request):
+        ser = PolicyEvolutionProposalCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        p = PolicyEvolutionProposal.objects.create(
+            proposed_content=ser.validated_data["proposed_content"],
+            source=ser.validated_data["source"],
+            rationale=ser.validated_data.get("rationale") or "",
+        )
+        return Response(PolicyEvolutionProposalSerializer(p).data, status=status.HTTP_201_CREATED)
+
+
+class PolicyEvolutionProposalDetailView(APIView):
+    permission_classes = [PolicyWritePermission]
+
+    def patch(self, request, proposal_id):
+        p = PolicyEvolutionProposal.objects.filter(id=proposal_id).first()
+        if not p:
+            raise Http404()
+        if p.status != PolicyEvolutionProposal.Status.PENDING:
+            return Response(
+                {"detail": "Proposal is not pending."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        ser = PolicyEvolutionProposalResolveSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        action = ser.validated_data["action"]
+        note = (ser.validated_data.get("note") or "")[:512]
+        draft_name = (ser.validated_data.get("draft_name") or "").strip() or "policy-from-proposal"
+        with transaction.atomic():
+            if action == "reject":
+                p.status = PolicyEvolutionProposal.Status.REJECTED
+                p.resolution_note = note
+                p.resolved_at = timezone.now()
+                p.save(update_fields=["status", "resolution_note", "resolved_at"])
+                return Response(PolicyEvolutionProposalSerializer(p).data)
+            draft = PolicyDraft.objects.create(
+                name=draft_name[:128],
+                content=p.proposed_content,
+                is_active=False,
+            )
+            p.status = PolicyEvolutionProposal.Status.ACCEPTED
+            p.resolution_note = note
+            p.resolved_at = timezone.now()
+            p.derived_policy_draft = draft
+            p.save(
+                update_fields=["status", "resolution_note", "resolved_at", "derived_policy_draft"]
+            )
+        return Response(PolicyEvolutionProposalSerializer(p).data)
 
 
 class GovernanceLeaderboardHistoryView(APIView):
@@ -1368,19 +1670,31 @@ class PolicyDraftDetailView(APIView):
         for key, val in ser.validated_data.items():
             setattr(draft, key, val)
         draft.save()
+        if draft.is_active:
+            cache.delete("orchestration:active_policy")
         return Response(PolicyDraftSerializer(draft).data)
 
     def patch(self, request, draft_id):
         draft = self._get_draft(draft_id)
-        ser = PolicyDraftWriteSerializer(data=request.data, partial=True)
+        data = dict(request.data) if isinstance(request.data, dict) else {}
+        if "content" in data and isinstance(data.get("content"), dict):
+            base = draft.content if isinstance(draft.content, dict) else {}
+            data = {**data, "content": {**base, **data["content"]}}
+        ser = PolicyDraftWriteSerializer(data=data, partial=True)
         ser.is_valid(raise_exception=True)
         for key, val in ser.validated_data.items():
             setattr(draft, key, val)
         draft.save()
+        if draft.is_active:
+            cache.delete("orchestration:active_policy")
         return Response(PolicyDraftSerializer(draft).data)
 
     def delete(self, request, draft_id):
-        self._get_draft(draft_id).delete()
+        draft = self._get_draft(draft_id)
+        was_active = draft.is_active
+        draft.delete()
+        if was_active:
+            cache.delete("orchestration:active_policy")
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

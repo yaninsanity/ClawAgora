@@ -297,3 +297,102 @@ class GovernanceSnapshot(models.Model):
                 name="uniq_governance_snapshot_key",
             )
         ]
+
+
+class OrganizationUnit(models.Model):
+    """Department / org tree for mapping voters to scope (IdP integration hooks)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    slug = models.SlugField(max_length=64, unique=True, db_index=True)
+    name = models.CharField(max_length=128)
+    parent = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="children",
+    )
+    approval_template = models.ForeignKey(
+        "ApprovalPolicyTemplate",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="organization_units",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["slug"]
+
+
+class GovernanceSubject(models.Model):
+    """Binds ``voter_id`` (and optional IdP ``sub``) to org scope for RBAC evolution."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    voter_id = models.CharField(max_length=128, unique=True, db_index=True)
+    external_subject = models.CharField(max_length=256, blank=True, default="", db_index=True)
+    display_name = models.CharField(max_length=256, blank=True, default="")
+    org_unit = models.ForeignKey(
+        OrganizationUnit,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="subjects",
+    )
+    rank_hint = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Optional role label (e.g. senior_reviewer) — not enforced by API yet.",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["voter_id"]
+
+
+class ApprovalPolicyTemplate(models.Model):
+    """Named quorum presets (e.g. four-eyes). Runtime quorum still follows CLAWAGORA_APPROVAL_QUORUM."""
+
+    slug = models.SlugField(max_length=64, unique=True, db_index=True)
+    name = models.CharField(max_length=128)
+    quorum = models.PositiveSmallIntegerField()
+    description = models.TextField(blank=True, default="")
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["sort_order", "slug"]
+
+
+class PolicyEvolutionProposal(models.Model):
+    """Suggested policy JSON — must be accepted by a human before becoming a PolicyDraft / activation."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "pending"
+        ACCEPTED = "accepted", "accepted"
+        REJECTED = "rejected", "rejected"
+        SUPERSEDED = "superseded", "superseded"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    proposed_content = models.JSONField()
+    source = models.CharField(max_length=64, db_index=True)
+    rationale = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolution_note = models.CharField(max_length=512, blank=True, default="")
+    derived_policy_draft = models.ForeignKey(
+        PolicyDraft,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="evolution_proposals",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
