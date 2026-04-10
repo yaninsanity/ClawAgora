@@ -37,6 +37,7 @@ import {
   type TimelineEvent,
 } from "./api/client";
 import { FirstRunOnboarding } from "./components/FirstRunOnboarding";
+import { OptionalProductHelp } from "./components/OptionalProductHelp";
 import {
   PolicyLegislativeForm,
   buildPolicyContentFromForm,
@@ -74,6 +75,32 @@ const TAB_BUTTON_ID: Record<RightTab, string> = {
   governance: "tab-governance",
 };
 
+const TASK_STATUS_LABELS: Record<string, string> = {
+  idle: "Idle",
+  received: "Received",
+  queued: "Queued",
+  running: "Running",
+  pending_approval: "Pending approval",
+  needs_revision: "Needs revision",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+function taskStatusLabel(code: string): string {
+  return TASK_STATUS_LABELS[code] ?? code.replace(/_/g, " ");
+}
+
+const RISK_TIER_LABELS: Record<string, string> = {
+  low: "Low risk",
+  medium: "Medium risk",
+  high: "High risk",
+};
+
+function riskTierLabel(tier: string): string {
+  return RISK_TIER_LABELS[tier] ?? `${tier} risk`;
+}
+
 /** Matches server-seeded draft from migration 0014; safe for users to delete. */
 function isSeedPolicyDraft(p: PolicyDraft): boolean {
   return (
@@ -98,6 +125,7 @@ export function App() {
   // ── Active task detail ─────────────────────────────────────────────────────
   const [task, setTask] = useState<TaskRecord | null>(null);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [timelineLoadError, setTimelineLoadError] = useState<string | null>(null);
   const [loadingTaskId, setLoadingTaskId] = useState<string | null>(null);
 
   // ── Right-panel state ──────────────────────────────────────────────────────
@@ -128,6 +156,14 @@ export function App() {
   const [policyFormInitialAdvancedOpen, setPolicyFormInitialAdvancedOpen] = useState(false);
   const policyFormSectionRef = useRef<HTMLDivElement | null>(null);
   const [taskListFilter, setTaskListFilter] = useState<TaskListFilter>("all");
+  const [taskListCount, setTaskListCount] = useState<number | null>(null);
+  const [taskSearchInput, setTaskSearchInput] = useState("");
+  const [taskSearchQuery, setTaskSearchQuery] = useState("");
+  const [taskIdCopyFeedback, setTaskIdCopyFeedback] = useState(false);
+  const taskSearchFieldId = useId();
+  const [taskListLoadError, setTaskListLoadError] = useState<string | null>(null);
+  const [policyListLoadError, setPolicyListLoadError] = useState<string | null>(null);
+  const [policyLogLoadError, setPolicyLogLoadError] = useState<string | null>(null);
   const [onboardingVisible, setOnboardingVisible] = useState(() => !isOnboardingDismissed());
 
   const mergedExecutorOptions = useMemo(
@@ -161,24 +197,45 @@ export function App() {
 
   const status = useMemo(() => task?.status ?? "idle", [task]);
 
+  const copyTaskIdToClipboard = useCallback((id: string) => {
+    void navigator.clipboard.writeText(id).then(() => {
+      setTaskIdCopyFeedback(true);
+      window.setTimeout(() => setTaskIdCopyFeedback(false), 2000);
+    });
+  }, []);
+
   // ── Helpers ────────────────────────────────────────────────────────────────
   const refreshTaskList = useCallback(async () => {
     try {
-      const params: Parameters<typeof listTasks>[0] = { limit: 30 };
+      const params: Parameters<typeof listTasks>[0] = { limit: 50 };
       if (taskListFilter === "judicial") params.judicial_queue = true;
       else if (taskListFilter === "needs_revision") params.status = "needs_revision";
-      const { results } = await listTasks(params);
+      if (taskSearchQuery) params.q = taskSearchQuery;
+      const { results, count } = await listTasks(params);
       setTaskList(results);
-    } catch {
-      /* silent */
+      setTaskListCount(count);
+      setTaskListLoadError(null);
+    } catch (e) {
+      setTaskListLoadError(e instanceof Error ? e.message : String(e));
     }
-  }, [taskListFilter]);
+  }, [taskListFilter, taskSearchQuery]);
 
   const refreshPolicies = useCallback(async () => {
     try {
       setPolicies(await listPolicies());
-    } catch {
-      /* silent */
+      setPolicyListLoadError(null);
+    } catch (e) {
+      setPolicyListLoadError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  const refreshPolicyLog = useCallback(async () => {
+    try {
+      setPolicyLog(await fetchPolicyActivationLog(40));
+      setPolicyLogLoadError(null);
+    } catch (e) {
+      setPolicyLog([]);
+      setPolicyLogLoadError(e instanceof Error ? e.message : String(e));
     }
   }, []);
 
@@ -206,19 +263,36 @@ export function App() {
     [mergedExecutorOptions],
   );
 
-  const loadTask = useCallback(async (id: string) => {
-    setLoadingTaskId(id);
+  const applyTimelineForTask = useCallback(async (taskId: string) => {
     try {
-      const [t, tl] = await Promise.all([
-        fetchTask(id),
-        fetchTimeline(id).catch(() => [] as TimelineEvent[]),
-      ]);
-      setTask(t);
+      const tl = await fetchTimeline(taskId);
+      setTimelineLoadError(null);
       setEvents(tl);
-    } finally {
-      setLoadingTaskId(null);
+    } catch (e) {
+      setTimelineLoadError(e instanceof Error ? e.message : String(e));
+      setEvents([]);
     }
   }, []);
+
+  const loadTask = useCallback(
+    async (id: string) => {
+      setLoadingTaskId(id);
+      setErr(null);
+      try {
+        const t = await fetchTask(id);
+        setTask(t);
+        await applyTimelineForTask(id);
+      } catch (e) {
+        setTask(null);
+        setEvents([]);
+        setTimelineLoadError(null);
+        setErr(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoadingTaskId(null);
+      }
+    },
+    [applyTimelineForTask],
+  );
 
   useEffect(() => {
     void refreshPolicies();
@@ -236,19 +310,20 @@ export function App() {
   );
 
   useEffect(() => {
+    const id = window.setTimeout(() => {
+      setTaskSearchQuery(taskSearchInput.trim());
+    }, 350);
+    return () => window.clearTimeout(id);
+  }, [taskSearchInput]);
+
+  useEffect(() => {
     void refreshTaskList();
-  }, [taskListFilter, refreshTaskList]);
+  }, [taskListFilter, taskSearchQuery, refreshTaskList]);
 
   useEffect(() => {
     if (rightTab !== "policies") return;
-    void (async () => {
-      try {
-        setPolicyLog(await fetchPolicyActivationLog(40));
-      } catch {
-        setPolicyLog([]);
-      }
-    })();
-  }, [rightTab]);
+    void refreshPolicyLog();
+  }, [rightTab, refreshPolicyLog]);
 
   // Auto-refresh task list while any task is in a transient state.
   useEffect(() => {
@@ -299,6 +374,7 @@ export function App() {
   async function run() {
     setBusy(true);
     setErr(null);
+    setTimelineLoadError(null);
     setEvents([]);
     setTask(null);
     try {
@@ -335,8 +411,7 @@ export function App() {
         t = await waitForTerminal(t.id);
       }
       setTask(t);
-      const tl = await fetchTimeline(t.id).catch(() => []);
-      setEvents(tl);
+      await applyTimelineForTask(t.id);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -349,14 +424,14 @@ export function App() {
     if (!task) return;
     setBusy(true);
     setErr(null);
+    setTimelineLoadError(null);
     try {
       let t = await retryTask(task.id, asyncMode ? "async" : "sync");
       if (t.status === "queued" || t.status === "running") {
         t = await waitForTerminal(t.id);
       }
       setTask(t);
-      const tl = await fetchTimeline(t.id).catch(() => []);
-      setEvents(tl);
+      await applyTimelineForTask(t.id);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -372,6 +447,7 @@ export function App() {
     try {
       const t = await cancelTask(task.id);
       setTask(t);
+      await applyTimelineForTask(t.id);
       void refreshTaskList();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -397,11 +473,7 @@ export function App() {
       if (editingPolicyId) {
         await updatePolicy(editingPolicyId, { name: nameTrim, content: built.content });
         void refreshPolicies();
-        try {
-          setPolicyLog(await fetchPolicyActivationLog(40));
-        } catch {
-          /* ignore */
-        }
+        void refreshPolicyLog();
         setPolicyFeedback({
           kind: "success",
           message: "Draft updated. If it is on, new tasks already use the latest rules.",
@@ -411,6 +483,7 @@ export function App() {
         setPolicyName("");
         setPolicyLegislativeForm(emptyLegislativeFormState(mergedExecutorIds));
         void refreshPolicies();
+        void refreshPolicyLog();
         setPolicyFeedback({
           kind: "success",
           message: "Draft saved. Find it in the list above — press Turn on when you want new tasks to use it.",
@@ -460,11 +533,7 @@ export function App() {
     try {
       await activatePolicy(id);
       void refreshPolicies();
-      try {
-        setPolicyLog(await fetchPolicyActivationLog(40));
-      } catch {
-        /* ignore */
-      }
+      void refreshPolicyLog();
       setPolicyFeedback({ kind: "success", message: "Rules are on for new tasks." });
       policyFeedbackTimerRef.current = setTimeout(() => {
         setPolicyFeedback((f) => (f?.kind === "success" ? null : f));
@@ -487,11 +556,7 @@ export function App() {
     try {
       await deactivateAllPolicies();
       void refreshPolicies();
-      try {
-        setPolicyLog(await fetchPolicyActivationLog(40));
-      } catch {
-        /* ignore */
-      }
+      void refreshPolicyLog();
       setPolicyFeedback({
         kind: "success",
         message: "Rule set turned off. New tasks use defaults until you turn a draft on again.",
@@ -522,6 +587,7 @@ export function App() {
     if (!task) return;
     setBusy(true);
     setErr(null);
+    setTimelineLoadError(null);
     try {
       const vid = voterId.trim() || "operator";
       let t = await castVote(task.id, vid, decision, voteNote.trim() || undefined);
@@ -530,8 +596,7 @@ export function App() {
         t = await waitForTerminal(t.id);
       }
       setTask(t);
-      const tl = await fetchTimeline(t.id).catch(() => []);
-      setEvents(tl);
+      await applyTimelineForTask(t.id);
       setVoteNote("");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -593,10 +658,10 @@ export function App() {
   const confPct = cf ? Math.round(cf.confidence * 100) : null;
 
   const EXAMPLES = [
+    "Goal: one-page exec brief on Q3 risks — 3 bullets, 1 recommendation, plain language",
+    "Summarize the top 3 risks in this sprint for stand-up (5 bullets max)",
+    "Draft a changelog entry for v2.0 suitable for customers",
     "Write a haiku about the ocean",
-    "Summarize the top 3 risks in this sprint",
-    "Draft a changelog entry for v2.0",
-    "Drop the production database",
   ];
 
   return (
@@ -608,12 +673,53 @@ export function App() {
         <a href="#workspace-sidebar" className="skip-link skip-link-secondary">
           Skip to workspace
         </a>
+        {!onboardingVisible ? (
+          <a href="#optional-help" className="skip-link skip-link-tertiary">
+            Skip to quick reference
+          </a>
+        ) : null}
       </div>
       <header className="header" role="banner">
         <h1 className="header-title">ClawAgora</h1>
-        <span className="muted header-sub">
-          Left: start a run · Right: queue and settings (optional until you need them)
-        </span>
+        <div className="header-copy">
+          <p className="header-lead">
+            <strong>State a clear goal</strong>, send it to the agent, then <strong>manage</strong> the run from{" "}
+            <strong>Progress</strong> and <strong>Review</strong>. You get <strong>traceable stages</strong> and, on
+            success, a <strong>receipt</strong> you can audit. Use <strong>Rules</strong> / <strong>Safety</strong> when
+            you need tighter control.
+          </p>
+          {!onboardingVisible ? (
+            <p className="header-help-jump">
+              <a href="#optional-help" className="header-help-jump-link">
+                Quick reference
+              </a>
+              <span className="muted header-help-jump-sep" aria-hidden="true">
+                {" "}
+                ·{" "}
+              </span>
+              <a href="#main-content" className="header-help-jump-link">
+                Jump to request form
+              </a>
+            </p>
+          ) : null}
+          <details className="header-more-details">
+            <summary className="product-help-summary header-more-summary disclosure-summary-a11y">
+              More product detail (optional)
+            </summary>
+            <div className="header-more-body">
+              <p className="muted">
+                Built for <strong>operators and reviewers</strong>, not only engineers. Same coverage as fixed-department
+                consoles (inbox, policy, dispatch, audit) with <strong>separated surfaces</strong>:{" "}
+                <strong>Rules</strong> (legislative), <strong>Send request + Progress</strong> (executive),{" "}
+                <strong>Review + Safety</strong> (judicial). Optional <strong>OpenClaw</strong> for external bridges.
+              </p>
+              <p className="header-sub header-sub-tech muted">
+                Live API on this host (<code className="code-inline">Task</code>, <code className="code-inline">TaskEvent</code>
+                ). Layout: left — send requests; right — Review, Rules, Safety.
+              </p>
+            </div>
+          </details>
+        </div>
       </header>
 
       {onboardingVisible ? (
@@ -630,74 +736,40 @@ export function App() {
         />
       ) : null}
 
-      {!onboardingVisible ? (
-        <section className="user-journey" aria-labelledby="user-journey-heading">
-          <h2 id="user-journey-heading" className="user-journey-title">
-            Three steps
-          </h2>
-          <ol className="user-journey-steps">
-            <li className="user-journey-step">
-              <span className="user-journey-num" aria-hidden="true">
-                1
-              </span>
-              <span className="user-journey-text">
-                Type in the left box, press <strong>Run task</strong> — output appears below.
-              </span>
-            </li>
-            <li className="user-journey-step">
-              <span className="user-journey-num" aria-hidden="true">
-                2
-              </span>
-              <span className="user-journey-text">
-                <strong>Review</strong> lists past runs; open one to see details here.
-              </span>
-            </li>
-            <li className="user-journey-step user-journey-step-optional">
-              <span className="user-journey-num" aria-hidden="true">
-                3
-              </span>
-              <span className="user-journey-text">
-                <strong>Rules</strong> and <strong>Safety</strong> are optional — use when you want tighter control.
-              </span>
-            </li>
-          </ol>
-          <p className="user-journey-foot muted">
-            <button
-              type="button"
-              className="link-inline"
-              onClick={() => {
-                resetOnboardingDismissal();
-                setOnboardingVisible(true);
-              }}
-            >
-              Walkthrough (same steps, more detail)
-            </button>
-          </p>
-        </section>
-      ) : null}
-
       <div className="layout">
         {/* ── Left: submit + detail ─────────────────────────────────────── */}
-        <main id="main-content" className="col-primary" tabIndex={-1} aria-label="Start and view runs">
+        <main id="main-content" className="col-primary" tabIndex={-1} aria-label="Goals, agent runs, and outcomes">
           <fieldset className="panel panel--task-entry task-fieldset">
-            <legend className="task-fieldset-legend">Start a run</legend>
+            <legend className="task-fieldset-legend">Goal for this run</legend>
+            <p className="task-goal-chain muted" aria-hidden="true">
+              <span className="task-goal-chain-step">Goal</span>
+              <span className="task-goal-chain-arrow">→</span>
+              <span className="task-goal-chain-step">Agent stages</span>
+              <span className="task-goal-chain-arrow">→</span>
+              <span className="task-goal-chain-step">Outcome &amp; receipt</span>
+            </p>
             <label className="field-label field-label--friendly" htmlFor="task-input-main">
-              What do you want the system to do?
+              What outcome should the agent deliver?
             </label>
             <textarea
               id="task-input-main"
               value={text}
-              placeholder="Example: summarize last week’s commits, or draft a reply to this email…"
+              placeholder="Be specific: audience, format, constraints, and done-when. Example: one-page brief for leadership on Q3 risks — 3 bullets, 1 recommendation, no jargon."
               onChange={(e) => setText(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !busy) {
                   void run();
                 }
               }}
-              aria-describedby="task-input-format-hint"
+              aria-describedby="task-goal-primer task-input-format-hint"
             />
+            <p id="task-goal-primer" className="field-hint-goal">
+              A precise goal makes planning and validation match what you need. Manage every run in <strong>Review</strong>;
+              tighten behavior with <strong>Rules</strong> when required.
+            </p>
             <p id="task-input-format-hint" className="field-hint-friendly">
-              Status and results show in the panel below after you press Run task.
+              After <strong>Send request</strong>, watch <strong>Progress</strong> below, then <strong>Outcome</strong> and
+              the <strong>receipt</strong> when the run completes successfully.
             </p>
             <div className="example-chips example-chips-compact">
               <label className="example-chips-label" htmlFor="task-example-select">
@@ -732,7 +804,7 @@ export function App() {
                   disabled={busy}
                   aria-busy={busy}
                 >
-                  {busy ? "Running…" : "Run task"}
+                  {busy ? "Sending…" : "Send request"}
                 </button>
                 {canRetry && (
                   <button type="button" onClick={() => void retry()} disabled={busy}>
@@ -750,8 +822,13 @@ export function App() {
                   </button>
                 )}
                 {status !== "idle" && (
-                  <span className={`status-badge status-${status}`} aria-live="polite" aria-atomic="true">
-                    {status}
+                  <span
+                    className={`status-badge status-${status}`}
+                    aria-live="polite"
+                    aria-atomic="true"
+                    title={taskStatusLabel(status)}
+                  >
+                    {taskStatusLabel(status)}
                   </span>
                 )}
                 {task && task.run_attempt > 0 && (
@@ -759,18 +836,24 @@ export function App() {
                 )}
               </div>
               <details className="task-advanced-details">
-                <summary className="task-advanced-summary">Need background run or OpenClaw? (optional)</summary>
+                <summary className="task-advanced-summary disclosure-summary-a11y">
+                  Advanced — background run or OpenClaw (optional)
+                </summary>
                 <div className="task-advanced-inner task-advanced-inner--stack">
                   <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                  <label className="muted switch-label" htmlFor="task-async-queue" title="Queue mode: submit and return immediately; task runs in background via RQ worker">
+                  <label
+                    className="muted switch-label"
+                    htmlFor="task-async-queue"
+                    title="Submit and return immediately; work continues in the background"
+                  >
                     <input
                       id="task-async-queue"
                       type="checkbox"
                       checked={asyncMode}
                       onChange={(e) => setAsyncMode(e.target.checked)}
-                      aria-label="Queue task for background worker"
+                      aria-label="Run in background queue"
                     />
-                    queue
+                    Run in background
                   </label>
                   <label
                     className={`muted switch-label${
@@ -808,14 +891,14 @@ export function App() {
                     ⌘↵ run
                   </span>
                   <span className="visually-hidden">
-                    Shortcut: Command or Control plus Enter runs the task.
+                    Shortcut: Command or Control plus Enter sends the request.
                   </span>
                   </div>
                   <div className="task-context-fields" role="group" aria-label="Shared context for bridges (optional)">
                     <p className="field-hint-muted task-context-hint">
-                      Optional: same values on multiple runs help an OpenClaw bridge load external memory or group work.
-                      Sent as <span className="mono">metadata.clawagora_context</span> and delegate{" "}
-                      <span className="mono">context</span>.
+                      Optional — for integrations: repeat the same IDs so an external bridge can load memory or group
+                      related work. (Technical: <span className="mono">metadata.clawagora_context</span> / delegate{" "}
+                      <span className="mono">context</span>.)
                     </p>
                     <div className="task-context-grid">
                       <label className="task-context-label">
@@ -884,21 +967,47 @@ export function App() {
               <div className="empty-icon" aria-hidden="true">
                 ◎
               </div>
-              <div className="empty-title">Nothing open yet</div>
+              <div className="empty-title">No run selected</div>
               <div className="empty-body">
-                Use <strong>Run task</strong> above, or pick a row under <strong>Review</strong> on the right.
+                Write a <strong>clear goal</strong> above, press <strong>Send request</strong>, then follow{" "}
+                <strong>Progress</strong> and the <strong>Outcome</strong> here. Successful runs include a{" "}
+                <strong>receipt</strong> for audit. Reopen any item from <strong>Review</strong> on the right.
               </div>
+              {!onboardingVisible ? (
+                <p className="empty-state-help muted">
+                  <a href="#optional-help" className="empty-state-help-link">
+                    Quick reference
+                  </a>{" "}
+                  (terms and map) is below the workspace.
+                </p>
+              ) : null}
             </div>
           )}
 
           {task && (
             <div className="panel" aria-labelledby="task-result-heading">
               <h2 id="task-result-heading" className="panel-section-heading">
-                Result
+                Outcome
               </h2>
-              <div className="task-meta row" style={{ marginBottom: 10 }}>
-                <span className="pill mono">{task.id.slice(0, 8)}</span>
-                <span className={`risk-badge risk-${task.risk_tier}`}>{task.risk_tier}</span>
+              <p className="panel-section-sub muted">
+                Agent output and trace for this run — compare against the goal you stated above. Manage retries and
+                approvals from <strong>Review</strong> or here.
+              </p>
+              <div className="task-meta row task-meta-with-actions" style={{ marginBottom: 10 }}>
+                <span className="pill mono" title={task.id}>
+                  {task.id.slice(0, 8)}
+                </span>
+                <button
+                  type="button"
+                  className="btn-sm task-id-copy-btn"
+                  onClick={() => copyTaskIdToClipboard(task.id)}
+                  aria-label="Copy full task ID to clipboard"
+                >
+                  {taskIdCopyFeedback ? "Copied" : "Copy ID"}
+                </button>
+                <span className={`risk-badge risk-${task.risk_tier}`} title={riskTierLabel(task.risk_tier)}>
+                  {riskTierLabel(task.risk_tier)}
+                </span>
                 {cf && (
                   <span className="muted">
                     {cf.label} · {confPct}%
@@ -915,6 +1024,25 @@ export function App() {
 
               {task.receipt && <ReceiptPanel receipt={task.receipt} />}
 
+              {timelineLoadError ? (
+                <div
+                  className="timeline-load-banner"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="timeline-load-banner-text">
+                    Timeline could not be loaded: {timelineLoadError}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-sm timeline-load-retry"
+                    onClick={() => void applyTimelineForTask(task.id)}
+                  >
+                    Retry timeline
+                  </button>
+                </div>
+              ) : null}
+
               <TaskTimeline events={events} />
             </div>
           )}
@@ -924,7 +1052,7 @@ export function App() {
         <aside
           id="workspace-sidebar"
           className="col-secondary"
-          aria-label="Tools: review tasks, rules, and safety"
+          aria-label="Workspace: history, rules, and safety"
           tabIndex={-1}
         >
           <nav className="workspace-nav" aria-labelledby="workspace-nav-heading">
@@ -985,28 +1113,119 @@ export function App() {
             id={TAB_PANEL_ID.tasks}
             role="tabpanel"
             aria-labelledby={TAB_BUTTON_ID.tasks}
-            aria-label="Review: task queue"
+            aria-label="Review: task list, search, and filters"
             hidden={rightTab !== "tasks"}
           >
               <p className="task-list-intro muted">
-                Click a row to open it in the left column. Use filters to narrow the list.
+                Search matches goal text; filters narrow by status. Select a row to load full detail, timeline, and
+                receipt on the left. List refreshes while runs are active.
               </p>
-              <div className="task-filter-row" role="toolbar" aria-label="Review list filters">
+              <div className="task-list-toolbar">
+                <div className="task-list-toolbar-row">
+                  <label className="visually-hidden" htmlFor={taskSearchFieldId}>
+                    Search tasks by goal text
+                  </label>
+                  <input
+                    id={taskSearchFieldId}
+                    type="search"
+                    className="task-list-search"
+                    placeholder="Search goal text…"
+                    value={taskSearchInput}
+                    onChange={(e) => setTaskSearchInput(e.target.value)}
+                    autoComplete="off"
+                    enterKeyHint="search"
+                  />
+                  <button
+                    type="button"
+                    className="btn-sm task-list-refresh-btn"
+                    onClick={() => void refreshTaskList()}
+                    aria-label="Refresh task list"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                <p className="task-list-count muted" role="status" aria-live="polite">
+                  {taskListLoadError ? (
+                    "List unavailable"
+                  ) : taskListCount !== null ? (
+                    <>
+                      <strong>{taskListCount}</strong> task{taskListCount === 1 ? "" : "s"}
+                      {taskListCount > taskList.length ? (
+                        <>
+                          {" "}
+                          (showing first {taskList.length})
+                        </>
+                      ) : null}
+                      {taskSearchQuery ? (
+                        <>
+                          {" "}
+                          matching &quot;{taskSearchQuery}&quot;
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    `${taskList.length} loaded`
+                  )}
+                </p>
+              </div>
+              {taskListLoadError ? (
+                <div
+                  className="timeline-load-banner workspace-fetch-banner"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="timeline-load-banner-text">
+                    Task list could not be loaded: {taskListLoadError}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-sm timeline-load-retry"
+                    onClick={() => void refreshTaskList()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
+              <div className="task-filter-row" role="toolbar" aria-label="Filter tasks by status">
                 {(["all", "judicial", "needs_revision"] as const).map((f) => (
                   <button
                     key={f}
                     type="button"
                     className={`chip${taskListFilter === f ? " chip-active" : ""}`}
                     aria-pressed={taskListFilter === f}
+                    aria-label={
+                      f === "all"
+                        ? "Show all tasks in the list"
+                        : f === "judicial"
+                          ? "Show only tasks waiting for human approval"
+                          : "Show only tasks that need revision"
+                    }
                     onClick={() => setTaskListFilter(f)}
                   >
                     {f === "all" ? "All" : f === "judicial" ? "Needs approval" : "Needs fix"}
                   </button>
                 ))}
               </div>
-              {taskList.length === 0 && (
+              {taskList.length === 0 && !taskListLoadError && (
                 <div className="muted task-list-empty" style={{ padding: "10px 12px" }}>
-                  No runs in this list yet — start one with <strong>Run task</strong> on the left.
+                  {taskSearchQuery ? (
+                    <>
+                      No tasks match your search. Try different words or{" "}
+                      <button type="button" className="link-inline" onClick={() => setTaskSearchInput("")}>
+                        clear search
+                      </button>
+                      .
+                    </>
+                  ) : taskListFilter === "all" ? (
+                    <>
+                      No tasks yet — press <strong>Send request</strong> on the left to create one. This list updates
+                      automatically when runs finish or need you.
+                    </>
+                  ) : (
+                    <>
+                      No tasks in this filter — switch to <strong>All</strong> or send a new request from the left.
+                    </>
+                  )}
                 </div>
               )}
               {taskList.map((t) => {
@@ -1024,7 +1243,7 @@ export function App() {
                   tabIndex={0}
                   aria-current={task?.id === t.id ? "true" : undefined}
                   aria-busy={rowLoading}
-                  aria-label={`Open task: ${preview}`}
+                  aria-label={`Open request: ${preview}. Status: ${taskStatusLabel(t.status)}. ${riskTierLabel(t.risk_tier)}.`}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" || e.key === " ") {
                       e.preventDefault();
@@ -1033,17 +1252,26 @@ export function App() {
                   }}
                 >
                   <div className="row" style={{ gap: 6 }}>
-                    <span className={`status-dot status-dot-${t.status}`} aria-hidden="true" />
+                    <span
+                      className={`status-dot status-dot-${t.status}`}
+                      title={taskStatusLabel(t.status)}
+                      aria-hidden="true"
+                    />
                     <span className="task-item-text">{preview}</span>
                     {rowLoading ? (
-                      <span className="visually-hidden">Loading task details</span>
+                      <span className="visually-hidden">Loading request details</span>
                     ) : null}
                   </div>
                   <div className="task-item-meta">
+                    <span className="task-item-id mono muted" title={t.id}>
+                      {t.id.slice(0, 8)}
+                    </span>
                     <span className="muted" style={{ fontSize: 10 }}>
                       {t.created_at.slice(0, 16).replace("T", " ")}
                     </span>
-                    <span className={`risk-badge risk-${t.risk_tier}`}>{t.risk_tier}</span>
+                    <span className={`risk-badge risk-${t.risk_tier}`} title={riskTierLabel(t.risk_tier)}>
+                      {riskTierLabel(t.risk_tier)}
+                    </span>
                     {t.error_code && (
                       <span className="pill pill-err pill-sm">{t.error_code}</span>
                     )}
@@ -1074,6 +1302,24 @@ export function App() {
                   {policyFeedback.message}
                 </div>
               ) : null}
+              {policyListLoadError ? (
+                <div
+                  className="timeline-load-banner workspace-fetch-banner"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="timeline-load-banner-text">
+                    Rules list could not be loaded: {policyListLoadError}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-sm timeline-load-retry"
+                    onClick={() => void refreshPolicies()}
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : null}
               <div className="policy-list">
                 <p id="policy-row-actions-hint" className="policy-list-ux-hint muted">
                   <strong>Turn on</strong> applies that draft to new tasks (only one set can be active).{" "}
@@ -1085,9 +1331,27 @@ export function App() {
                     No drafts yet — add one with the form at the bottom of this tab.
                   </div>
                 )}
+                {policyLogLoadError ? (
+                  <div
+                    className="timeline-load-banner workspace-fetch-banner"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <span className="timeline-load-banner-text">
+                      Rule change log could not be loaded: {policyLogLoadError}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-sm timeline-load-retry"
+                      onClick={() => void refreshPolicyLog()}
+                    >
+                      Retry
+                    </button>
+                  </div>
+                ) : null}
                 {policyLog.length > 0 ? (
                   <details className="policy-log-disclosure">
-                    <summary className="policy-log-disclosure-summary">Rule change log</summary>
+                    <summary className="policy-log-disclosure-summary disclosure-summary-a11y">Rule change log</summary>
                     <div className="muted policy-log-scroll policy-log-disclosure-body" style={{ fontSize: 10 }}>
                       {policyLog.slice(0, 12).map((e) => (
                         <div key={e.id} style={{ marginBottom: 4 }}>
@@ -1177,7 +1441,9 @@ export function App() {
               </div>
 
               <details className="policy-proposals-disclosure">
-                <summary className="policy-proposals-disclosure-summary">Suggested rule changes (optional)</summary>
+                <summary className="policy-proposals-disclosure-summary disclosure-summary-a11y">
+                  Suggested rule changes (optional)
+                </summary>
                 <PolicyProposalsPanel
                   compact
                   onPoliciesMayHaveChanged={() => void refreshPolicies()}
@@ -1227,6 +1493,15 @@ export function App() {
           </div>
         </aside>
       </div>
+
+      {!onboardingVisible ? (
+        <OptionalProductHelp
+          onReplayTour={() => {
+            resetOnboardingDismissal();
+            setOnboardingVisible(true);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1414,7 +1689,9 @@ function GovernancePanel({
   return (
     <div className="gov-panel">
       <p className="gov-panel-intro muted">
-        Defaults are fine to start. Use this tab when you want stricter checks or to read server health.
+        Defaults are fine. This column aligns <strong>how strictly</strong> agents may operate with your org&apos;s goals:
+        health snapshots and oversight — separate from the <strong>goal text</strong> on the left or <strong>Rules</strong>{" "}
+        drafts.
       </p>
       <section
         className="gov-ops-section"
@@ -1521,7 +1798,7 @@ function GovernancePanel({
               ) : null}
 
               <details className="gov-tech-disclosure">
-                <summary className="gov-tech-disclosure-summary">
+                <summary className="gov-tech-disclosure-summary disclosure-summary-a11y">
                   Technical: prompt circuit, registry, OpenClaw summary
                 </summary>
                 <div className="gov-tech-disclosure-body">
@@ -1617,7 +1894,9 @@ function GovernancePanel({
         </section>
 
         <details className="gov-quorum-disclosure">
-          <summary className="gov-quorum-disclosure-summary">Human approvals and env presets</summary>
+          <summary className="gov-quorum-disclosure-summary disclosure-summary-a11y">
+            Human approvals and env presets
+          </summary>
           <div className="gov-quorum-disclosure-body">
             <JudicialQuorumCard />
           </div>
@@ -1694,7 +1973,7 @@ function GovernancePanel({
 
           {deleg ? (
             <details className="gov-openclaw-delegate-disclosure">
-              <summary className="gov-openclaw-delegate-summary">
+              <summary className="gov-openclaw-delegate-summary disclosure-summary-a11y">
                 Delegate bridge (agents and callback)
               </summary>
               <div className="gov-openclaw-delegate-body">
@@ -1835,7 +2114,9 @@ function ApprovalPanel({
   return (
     <div className="panel approval-panel" role="region" aria-label="Human approval">
       <div className="row" style={{ marginBottom: 6, gap: 8 }}>
-        <span className={`risk-badge risk-${ar.risk_tier}`}>{ar.risk_tier}</span>
+        <span className={`risk-badge risk-${ar.risk_tier}`} title={riskTierLabel(ar.risk_tier)}>
+          {riskTierLabel(ar.risk_tier)}
+        </span>
         <span className="muted" style={{ fontSize: 11 }}>awaiting approval</span>
       </div>
       {ar.summary && (

@@ -196,6 +196,28 @@ function parseError(res: Response, text: string): Error {
   return new Error(`HTTP ${res.status}: ${text}`);
 }
 
+function assertJsonArray(data: unknown, apiLabel: string): unknown[] {
+  if (!Array.isArray(data)) {
+    throw new Error(`${apiLabel}: response must be a JSON array.`);
+  }
+  return data;
+}
+
+function assertTaskListEnvelope(
+  data: unknown,
+): { results: TaskListItem[]; count: number } {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Task list: response must be a JSON object.");
+  }
+  const o = data as Record<string, unknown>;
+  if (!Array.isArray(o.results)) {
+    throw new Error("Task list: missing results array.");
+  }
+  const count =
+    typeof o.count === "number" && Number.isFinite(o.count) ? o.count : 0;
+  return { results: o.results as TaskListItem[], count };
+}
+
 export async function fetchTask(taskId: string): Promise<TaskRecord> {
   const res = await fetch(base() + `/api/v1/tasks/${taskId}/`);
   const text = await res.text();
@@ -224,7 +246,7 @@ export async function listTasks(params?: {
   const res = await fetch(base() + "/api/v1/tasks/" + qs);
   const text = await res.text();
   if (!res.ok) throw parseError(res, text);
-  return JSON.parse(text) as { results: TaskListItem[]; count: number };
+  return assertTaskListEnvelope(JSON.parse(text) as unknown);
 }
 
 export async function createTask(
@@ -305,7 +327,11 @@ export async function fetchTimeline(taskId: string): Promise<TimelineEvent[]> {
   if (!res.ok) {
     throw parseError(res, text);
   }
-  return JSON.parse(text) as TimelineEvent[];
+  const data = JSON.parse(text) as unknown;
+  if (!Array.isArray(data)) {
+    throw new Error("Timeline API returned a non-array body.");
+  }
+  return data as TimelineEvent[];
 }
 
 export async function fetchReplay(
@@ -395,7 +421,8 @@ export async function listPolicies(): Promise<PolicyDraft[]> {
   const res = await fetch(base() + "/api/v1/policies/");
   const text = await res.text();
   if (!res.ok) throw parseError(res, text);
-  return JSON.parse(text) as PolicyDraft[];
+  const data = JSON.parse(text) as unknown;
+  return assertJsonArray(data, "Policies list") as PolicyDraft[];
 }
 
 export async function createPolicy(
@@ -535,7 +562,8 @@ export async function fetchPolicyActivationLog(limit?: number): Promise<PolicyAc
   const res = await fetch(base() + "/api/v1/policies/activation-log/" + q);
   const text = await res.text();
   if (!res.ok) throw parseError(res, text);
-  return JSON.parse(text) as PolicyActivationLogEntry[];
+  const data = JSON.parse(text) as unknown;
+  return assertJsonArray(data, "Policy activation log") as PolicyActivationLogEntry[];
 }
 
 export type OpenClawDelegateStatus = {

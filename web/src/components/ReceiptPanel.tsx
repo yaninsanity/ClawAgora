@@ -16,6 +16,10 @@ export function ReceiptPanel({ receipt }: { receipt: ReceiptRecord }) {
 
   return (
     <div className="receipt-panel">
+      <h3 className="receipt-panel-heading">Receipt — verifiable record</h3>
+      <p className="receipt-panel-lead muted">
+        Hashed summary of what the run produced; use it to confirm the goal was met and for compliance handoff.
+      </p>
       {conclusion && (
         <div className="receipt-conclusion">{conclusion}</div>
       )}

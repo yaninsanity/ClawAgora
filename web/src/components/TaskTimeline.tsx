@@ -1,5 +1,15 @@
 import type { TimelineEvent } from "../api/client";
 
+function firstValidationIssueDetail(payload: Record<string, unknown>): string {
+  const issues = payload.issues;
+  if (!Array.isArray(issues) || issues.length === 0) return "";
+  const first = issues[0] as { code?: string; message?: string };
+  const code = String(first.code ?? "").trim();
+  const msg = String(first.message ?? "").trim();
+  if (code && msg) return `${code}: ${msg}`;
+  return code || msg || "";
+}
+
 function summarize(ev: TimelineEvent): string {
   if (ev.kind === "envelope") {
     const rid = String(ev.payload.request_id ?? "");
@@ -19,7 +29,11 @@ function summarize(ev: TimelineEvent): string {
   }
   if (ev.phase === "validate") {
     const passed = Boolean((ev.payload as { passed?: boolean }).passed);
-    return `${ev.kind}: ${passed ? "✓ pass" : "✗ fail"}`;
+    const detail = !passed ? firstValidationIssueDetail(ev.payload) : "";
+    const short =
+      detail.length > 90 ? `${detail.slice(0, 88).trimEnd()}…` : detail;
+    const suffix = short ? ` — ${short}` : "";
+    return `${ev.kind}: ${passed ? "✓ pass" : "✗ fail"}${suffix}`;
   }
   if (ev.phase === "execute") {
     const ex = String((ev.payload as { executor?: string }).executor ?? "");
@@ -44,6 +58,15 @@ function summarize(ev: TimelineEvent): string {
     const roleHint = roles.length > 0 ? ` · ${roles.slice(0, 5).join(", ")}` : "";
     return n > 0 ? `OpenClaw · ${n} artifact${n === 1 ? "" : "s"}${roleHint}` : "OpenClaw · done";
   }
+  if (ev.phase === "governance") {
+    if (ev.kind === "accountability_feedback") {
+      return "Governance · accountability snapshot (from run)";
+    }
+    if (ev.kind === "manual_feedback") {
+      return "Governance · manual feedback";
+    }
+    return `Governance · ${ev.kind}`;
+  }
   return `${ev.phase} · ${ev.kind}`;
 }
 
@@ -51,6 +74,7 @@ function evStatusClass(ev: TimelineEvent): string {
   if (ev.phase === "terminal" && ev.kind === "failed") return "ev-failed";
   if (ev.phase === "terminal" && ev.kind === "completed") return "ev-completed";
   if (ev.phase === "terminal" && ev.kind === "openclaw_completed") return "ev-completed ev-openclaw";
+  if (ev.phase === "governance") return "ev-governance";
   return "";
 }
 
@@ -58,21 +82,31 @@ export function TaskTimeline(props: { events: TimelineEvent[] }) {
   const sorted = [...props.events].sort((a, b) => a.sequence - b.sequence);
   if (sorted.length === 0) return null;
   return (
-    <section className="timeline" aria-label="Execution timeline">
-      <h3 className="timeline-heading">Timeline</h3>
+    <section className="timeline" aria-label="Request progress — stages completed in order">
+      <h3 className="timeline-heading">Progress</h3>
+      <p className="timeline-intro muted">
+        Each entry is a stage the system finished, newest at the bottom — so you can follow what happened without reading
+        logs.
+      </p>
       <ol className="timeline-list">
         {sorted.map((ev) => {
           const st = evStatusClass(ev);
+          const summary = summarize(ev);
+          const validateTitle =
+            ev.phase === "validate" && !(ev.payload as { passed?: boolean }).passed
+              ? firstValidationIssueDetail(ev.payload) || summary
+              : undefined;
           return (
           <li
             key={`${ev.sequence}-${ev.phase}-${ev.kind}`}
             className={st ? `timeline-item ${st}` : "timeline-item"}
+            title={validateTitle}
           >
             <div className="row" style={{ gap: 6, marginBottom: 2 }}>
               <span className="pill pill-sm">{ev.phase}</span>
               <span className="muted">#{ev.sequence}</span>
             </div>
-            <div className="timeline-summary">{summarize(ev)}</div>
+            <div className="timeline-summary">{summary}</div>
           </li>
         );
         })}
